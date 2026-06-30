@@ -1,0 +1,298 @@
+const { query, insertAndGetId } = require('../Services/db.service');
+const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
+
+async function list(req, res, next) {
+  try {
+    const { q, type, ville, quartier, minPrice, maxPrice, statut = 'active' } = req.query;
+    const clauses = [];
+    const values = [];
+
+    if (statut && statut !== 'all') {
+      clauses.push('a.statut = ?');
+      values.push(statut);
+    }
+    if (type && type !== 'all') {
+      clauses.push('a.type_annonce = ?');
+      values.push(type === 'proprio' ? 'creation' : 'existante');
+    }
+    if (ville) {
+      clauses.push('LOWER(v.nom_ville) LIKE ?');
+      values.push(`%${String(ville).toLowerCase()}%`);
+    }
+    if (quartier) {
+      clauses.push('LOWER(a.quartier) LIKE ?');
+      values.push(`%${String(quartier).toLowerCase()}%`);
+    }
+    if (minPrice) {
+      clauses.push('COALESCE(ch.prix_loyer, 0) >= ?');
+      values.push(Number(minPrice));
+    }
+    if (maxPrice) {
+      clauses.push('COALESCE(ch.prix_loyer, 0) <= ?');
+      values.push(Number(maxPrice));
+    }
+    if (q) {
+      clauses.push('(a.titre LIKE ? OR a.description LIKE ? OR v.nom_ville LIKE ? OR a.quartier LIKE ?)');
+      values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+    }
+
+    const rows = await query(
+      `
+      SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+             v.nom_ville, r.nom_region,
+             ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+      FROM annonces a
+      JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+      JOIN villes v ON v.id_ville = a.id_ville
+      JOIN regions r ON r.id_region = v.id_region
+      LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+      LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+      LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      GROUP BY a.id_annonce
+      ORDER BY a.date_creation DESC
+      LIMIT 500
+      `,
+      values
+    );
+
+    res.json(rows.map(mapAnnonceRow));
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getById(req, res, next) {
+  try {
+    const rows = await query(
+      `
+      SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+             v.nom_ville, r.nom_region,
+             ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+      FROM annonces a
+      JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+      JOIN villes v ON v.id_ville = a.id_ville
+      JOIN regions r ON r.id_region = v.id_region
+      LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+      LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+      LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+      WHERE a.id_annonce = ?
+      GROUP BY a.id_annonce
+      LIMIT 1
+      `,
+      [req.params.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+
+    const annonce = mapAnnonceRow(rows[0]);
+    const extra = await hydrateAnnonce(req.params.id);
+    res.json({ ...annonce, ...extra });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function create(req, res, next) {
+  try {
+    const {
+      reference,
+      titre,
+      description = null,
+      type_bailleur = 'membre',
+      mode_annonce = 'complete',
+      type_annonce = 'existante',
+      type_propriete = 'appartement',
+      total_colocataires = null,
+      surface_totale = null,
+      adresse_exacte = null,
+      quartier = null,
+      id_ville,
+      latitude = null,
+      longitude = null,
+      internet = null,
+      parking_voitures = 0,
+      parking_motos = 0,
+      parking_couvert = 0,
+      services_communs = null,
+      chambres = null,
+      services = [],
+      regles = [],
+      photos = [],
+    } = req.body;
+
+    if (!titre || !id_ville) {
+      return res.status(400).json({ message: 'Titre et ville requis.' });
+    }
+
+    const ref = reference || `CK-${Date.now().toString().slice(-8)}`;
+    const annonceId = await insertAndGetId(
+      `
+      INSERT INTO annonces
+      (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
+       type_propriete, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
+       longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        req.user.id,
+        ref,
+        titre,
+        description,
+        type_bailleur,
+        mode_annonce,
+        type_annonce,
+        type_propriete,
+        total_colocataires,
+        surface_totale,
+        adresse_exacte,
+        quartier,
+        id_ville,
+        latitude,
+        longitude,
+        internet,
+        parking_voitures,
+        parking_motos,
+        parking_couvert,
+        services_communs ? JSON.stringify(services_communs) : null,
+      ]
+    );
+
+    if (chambres) {
+      const ch = chambres;
+      await query(
+        `
+        INSERT INTO chambres
+        (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          annonceId,
+          ch.surface || null,
+          ch.est_meuble || null,
+          ch.prix_meubles || null,
+          ch.description_meubles || null,
+          ch.prix_loyer,
+          ch.prix_charges || null,
+          ch.type_garantie || '1mois',
+          ch.montant_garantie || null,
+          ch.date_disponibilite,
+        ]
+      );
+    }
+
+    for (const amenity of services) {
+      await query('INSERT INTO equipements_annonces (id_annonce, amenity) VALUES (?, ?)', [annonceId, amenity]);
+    }
+    for (const regle of regles) {
+      await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [annonceId, regle]);
+    }
+    for (let i = 0; i < photos.length; i += 1) {
+      await query('INSERT INTO photos_annonces (id_annonce, url, est_principale, ordre) VALUES (?, ?, ?, ?)', [
+        annonceId,
+        photos[i],
+        i === 0 ? 1 : 0,
+        i,
+      ]);
+    }
+
+    const created = await getByIdInternal(annonceId);
+    res.status(201).json(created);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function update(req, res, next) {
+  try {
+    const allowed = [
+      'titre', 'description', 'statut', 'type_bailleur', 'mode_annonce', 'type_annonce',
+      'type_propriete', 'total_colocataires', 'surface_totale', 'adresse_exacte', 'quartier',
+      'id_ville', 'latitude', 'longitude', 'internet', 'parking_voitures', 'parking_motos',
+      'parking_couvert', 'services_communs', 'date_publication', 'date_expiration', 'booster'
+    ];
+    const sets = [];
+    const values = [];
+    for (const field of allowed) {
+      if (req.body[field] !== undefined) {
+        sets.push(`${field} = ?`);
+        values.push(field === 'services_communs' && typeof req.body[field] === 'object'
+          ? JSON.stringify(req.body[field])
+          : req.body[field]);
+      }
+    }
+    if (sets.length === 0) {
+      return res.status(400).json({ message: 'Aucune modification fournie.' });
+    }
+
+    values.push(req.params.id);
+    await query(`UPDATE annonces SET ${sets.join(', ')} WHERE id_annonce = ?`, values);
+    const updated = await getByIdInternal(req.params.id);
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateStatus(req, res, next) {
+  try {
+    const { statut } = req.body;
+    if (!statut) {
+      return res.status(400).json({ message: 'Statut requis.' });
+    }
+    await query('UPDATE annonces SET statut = ?, date_modification = NOW() WHERE id_annonce = ?', [statut, req.params.id]);
+    res.json({ message: 'Statut mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function remove(req, res, next) {
+  try {
+    await query('DELETE FROM annonces WHERE id_annonce = ?', [req.params.id]);
+    res.json({ message: 'Annonce supprimee.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getByIdInternal(id) {
+  const rows = await query(
+    `
+    SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+           v.nom_ville, r.nom_region,
+           ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+           GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+           GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+           GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+    FROM annonces a
+    JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+    JOIN villes v ON v.id_ville = a.id_ville
+    JOIN regions r ON r.id_region = v.id_region
+    LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+    LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+    LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+    LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+    WHERE a.id_annonce = ?
+    GROUP BY a.id_annonce
+    LIMIT 1
+    `,
+    [id]
+  );
+  if (rows.length === 0) {
+    return null;
+  }
+  return mapAnnonceRow(rows[0]);
+}
+
+module.exports = { list, getById, create, update, updateStatus, remove };

@@ -1,38 +1,66 @@
-// src/Config/connectDatabase.js
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-// Configuration de la connexion
-const pool = mysql.createPool({
+let pool = null;
+
+function getConfig() {
+  return {
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'coolko',
-    port: process.env.DB_PORT || 3306,
+    database: process.env.DB_NAME || 'ColocKOO',
+    port: Number(process.env.DB_PORT || 3306),
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
-    charset: 'utf8mb4'
-});
-
-const getPool = () => pool;
-
-// Fonction pour tester la connexion
-async function testConnection() {
-    try {
-        const connection = await pool.getConnection();
-        console.log('✅ Connecté à la base de données MySQL');
-        connection.release();
-        return true;
-    } catch (error) {
-        console.error('❌ Erreur de connexion à la base de données:', error.message);
-        return false;
-    }
+    charset: 'utf8mb4',
+  };
 }
 
-// Exporter correctement avec module.exports
+async function ensureDatabase() {
+  const config = getConfig();
+  const dbName = config.database;
+
+  const connection = await mysql.createConnection({
+    host: config.host,
+    user: config.user,
+    password: config.password,
+    port: config.port,
+    multipleStatements: true,
+  });
+
+  await connection.query(
+    `CREATE DATABASE IF NOT EXISTS \`${dbName}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+  );
+  await connection.end();
+}
+
+async function initPool() {
+  if (!pool) {
+    await ensureDatabase();
+    pool = mysql.createPool(getConfig());
+  }
+  return pool;
+}
+
+async function getPool() {
+  return initPool();
+}
+
+async function testConnection() {
+  try {
+    const dbPool = await initPool();
+    const connection = await dbPool.getConnection();
+    console.log('Connecte a la base de donnees MySQL');
+    connection.release();
+    return true;
+  } catch (error) {
+    console.error('Erreur de connexion a la base de donnees:', error.message);
+    return false;
+  }
+}
+
 module.exports = {
-    pool,
-    testConnection,
-    getPool
+  getPool,
+  testConnection,
 };

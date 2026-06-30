@@ -1,20 +1,16 @@
-const cors = require("cors");
-require("dotenv").config();
+const cors = require('cors');
 
-const allowedOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",").map(origin => origin.trim())
-    : [];
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:4173')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        }
-
-        return callback(new Error(`CORS non autorisé pour : ${origin}`));
-    },
-    credentials: true,
-    optionsSuccessStatus: 200,
-};
-
-module.exports = cors(corsOptions);
+module.exports = cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origine CORS non autorisee'));
+  },
+  credentials: true,
+});

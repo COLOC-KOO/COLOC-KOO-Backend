@@ -1,49 +1,35 @@
-const express = require('express');
 const dotenv = require('dotenv');
-
 dotenv.config();
 
-const app = express();
+const { createApp } = require('./app');
+const { testConnection } = require('./Config/connectDatabase');
+
 const PORT = process.env.PORT || 5000;
+const app = createApp();
 
-// Middleware de base
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+async function start() {
+  await testConnection();
 
-// Routes de test
-app.get('/', (req, res) => {
-    res.json({
-        message: '🚀 API fonctionne!',
-        timestamp: new Date().toISOString()
-    });
-});
+  const server = app.listen(PORT, () => {
+    console.log(`Serveur demarre sur le port ${PORT}`);
+  });
 
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'OK',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Démarrer le serveur
-const server = app.listen(PORT, () => {
-    console.log('═══════════════════════════════════════════════════');
-    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-    console.log(`📚 API disponible sur: http://localhost:${PORT}`);
-    console.log(`❤️  Health check: http://localhost:${PORT}/health`);
-    console.log('═══════════════════════════════════════════════════');
-});
-
-// Gestion des erreurs
-process.on('unhandledRejection', (err) => {
-    console.error('❌ Erreur non gérée:', err);
+  process.on('unhandledRejection', err => {
+    console.error('Erreur non geree:', err);
     server.close(() => process.exit(1));
-});
+  });
 
-process.on('uncaughtException', (err) => {
-    console.error('❌ Erreur non gérée:', err);
+  process.on('uncaughtException', err => {
+    console.error('Erreur non geree:', err);
     server.close(() => process.exit(1));
-});
+  });
+}
 
-module.exports = server;
+if (require.main === module) {
+  start().catch(err => {
+    console.error('Impossible de demarrer le serveur:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { app, start };
