@@ -1,0 +1,39 @@
+{
+  "name": "hda-backend",
+  "version": "1.0.0",
+  "description": "HDA Platform Backend API",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "seed": "node src/Database/seed.js",
+    "seed:user": "node src/Database/seedUser.js",
+    "seed:refresh": "node src/Database/seed.js --refresh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HOTEL-DE-L-AVENUE/HDA-Backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/HOTEL-DE-L-AVENUE/HDA-Backend/issues"
+  },
+  "homepage": "https://github.com/HOTEL-DE-L-AVENUE/HDA-Backend#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.2.0",
+    "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.11.0",
+    "mysql2": "^3.22.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
