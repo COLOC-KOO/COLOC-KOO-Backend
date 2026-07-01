@@ -39,11 +39,13 @@ async function list(req, res, next) {
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-             v.nom_ville, r.nom_region,
-             ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
-             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
-             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+            v.nom_ville, r.nom_region,
+            MIN(ch.surface) AS chambre_surface, 
+            MIN(ch.prix_loyer) AS prix_loyer, 
+            MIN(ch.date_disponibilite) AS date_disponibilite,
+            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
@@ -52,7 +54,7 @@ async function list(req, res, next) {
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      WHERE a.statut = ?
       GROUP BY a.id_annonce
       ORDER BY a.date_creation DESC
       LIMIT 500
