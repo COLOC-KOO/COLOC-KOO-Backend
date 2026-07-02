@@ -43,6 +43,19 @@ async function initPool() {
   return pool;
 }
 
+async function ensureUserProfileColumn() {
+  try {
+    const dbPool = await initPool();
+    await dbPool.query('ALTER TABLE utilisateurs MODIFY COLUMN profile_picture MEDIUMTEXT NULL');
+    const [dateColumns] = await dbPool.query("SHOW COLUMNS FROM utilisateurs LIKE 'date_naissance'");
+    if (dateColumns.length === 0) {
+      await dbPool.query('ALTER TABLE utilisateurs ADD COLUMN date_naissance DATE NULL');
+    }
+  } catch (error) {
+    console.warn('Impossible d’ajuster les colonnes de profil:', error.message);
+  }
+}
+
 async function getPool() {
   return initPool();
 }
@@ -63,4 +76,5 @@ async function testConnection() {
 module.exports = {
   getPool,
   testConnection,
+  ensureUserProfileColumn,
 };
