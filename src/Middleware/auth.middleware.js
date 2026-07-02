@@ -1,5 +1,21 @@
 const jwt = require('jsonwebtoken');
 
+const ROLE_ALIASES = {
+  superadmin: 'super_admin',
+  super_admin: 'super_admin',
+  admin: 'admin',
+  moderateur: 'moderator',
+  moderator: 'moderator',
+  proprietaire: 'proprio',
+  proprio: 'proprio',
+  colocataire: 'coloc',
+  coloc: 'coloc',
+};
+
+function normalizeRole(role) {
+  return ROLE_ALIASES[String(role || '').trim()] || role;
+}
+
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
@@ -23,7 +39,8 @@ function requireRole(...roles) {
       return res.status(401).json({ message: 'Non authentifie.' });
     }
 
-    if (!roles.includes(req.user.role)) {
+    const allowed = roles.map(normalizeRole);
+    if (!allowed.includes(normalizeRole(req.user.role))) {
       return res.status(403).json({ message: 'Acces refuse.' });
     }
 
@@ -31,4 +48,4 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+module.exports = { requireAuth, requireRole, normalizeRole };

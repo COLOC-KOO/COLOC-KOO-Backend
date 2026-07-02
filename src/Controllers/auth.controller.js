@@ -3,6 +3,24 @@ const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
 
+const ROLE_ALIASES = {
+  superadmin: 'super_admin',
+  super_admin: 'super_admin',
+  admin: 'admin',
+  moderateur: 'moderator',
+  moderator: 'moderator',
+  proprietaire: 'proprio',
+  proprio: 'proprio',
+  colocataire: 'coloc',
+  coloc: 'coloc',
+};
+
+async function resolveRoleId(posteOrRole) {
+  const normalized = ROLE_ALIASES[String(posteOrRole || 'colocataire').trim()] || 'coloc';
+  const rows = await query('SELECT id_role FROM roles WHERE nom_role = ? LIMIT 1', [normalized]);
+  return rows[0]?.id_role || 1;
+}
+
 async function register(req, res, next) {
   try {
     const {
@@ -11,7 +29,8 @@ async function register(req, res, next) {
       nom,
       prenom,
       telephone = null,
-      id_role = 1,
+      id_role,
+      poste = 'colocataire',
       age = null,
       profession = null,
       bio = null,
@@ -26,12 +45,13 @@ async function register(req, res, next) {
       return res.status(409).json({ message: 'Cet email existe deja.' });
     }
 
+    const roleId = id_role || (await resolveRoleId(poste));
     const hash = await bcrypt.hash(mot_de_passe, 10);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
        (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, id_role)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, hash, nom, prenom, age, bio, profession, id_role]
+      [email, telephone, hash, nom, prenom, age, bio, profession, roleId]
     );
 
     const user = await getUserById(id);

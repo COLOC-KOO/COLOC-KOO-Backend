@@ -12,8 +12,15 @@ async function list(req, res, next) {
       values.push(statut);
     }
     if (type && type !== 'all') {
-      clauses.push('a.type_annonce = ?');
-      values.push(type === 'proprio' ? 'creation' : 'existante');
+      if (['appartement', 'maison', 'autre'].includes(type)) {
+        clauses.push('a.type_propriete = ?');
+        values.push(type);
+      } else if (type === 'chambre') {
+        clauses.push('ch.id_chambre IS NOT NULL');
+      } else {
+        clauses.push('a.type_annonce = ?');
+        values.push(type === 'proprio' ? 'creation' : 'existante');
+      }
     }
     if (ville) {
       clauses.push('LOWER(v.nom_ville) LIKE ?');
@@ -36,6 +43,7 @@ async function list(req, res, next) {
       values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
     }
 
+    const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
@@ -54,7 +62,7 @@ async function list(req, res, next) {
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-      WHERE a.statut = ?
+      ${whereSql}
       GROUP BY a.id_annonce
       ORDER BY a.date_creation DESC
       LIMIT 500
@@ -249,11 +257,17 @@ async function update(req, res, next) {
 async function updateStatus(req, res, next) {
   try {
     const { statut } = req.body;
-    if (!statut) {
+    const allowedStatuses = ['pending', 'active', 'rejected', 'archived', 'expired', 'en_attente', 'refusee', 'terminee'];
+    if (!statut || !allowedStatuses.includes(statut)) {
       return res.status(400).json({ message: 'Statut requis.' });
     }
-    await query('UPDATE annonces SET statut = ?, date_modification = NOW() WHERE id_annonce = ?', [statut, req.params.id]);
-    res.json({ message: 'Statut mis a jour.' });
+    const publicationSql = statut === 'active' ? ', date_publication = COALESCE(date_publication, NOW())' : '';
+    await query(
+      `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
+      [statut, req.params.id]
+    );
+    const updated = await getByIdInternal(req.params.id);
+    res.json(updated);
   } catch (err) {
     next(err);
   }
@@ -261,6 +275,17 @@ async function updateStatus(req, res, next) {
 
 async function remove(req, res, next) {
   try {
+    await query('DELETE FROM candidature_membres WHERE id_candidature IN (SELECT id_candidature FROM candidatures WHERE id_annonce = ?)', [req.params.id]);
+    await query('DELETE FROM candidatures WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM favoris WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM membres_equipes WHERE id_equipe IN (SELECT id_equipe FROM equipes WHERE id_annonce = ?)', [req.params.id]);
+    await query('DELETE FROM equipes WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM demandes_ckoo WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM signalements WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM photos_annonces WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM equipements_annonces WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM regles_annonces WHERE id_annonce = ?', [req.params.id]);
+    await query('DELETE FROM chambres WHERE id_annonce = ?', [req.params.id]);
     await query('DELETE FROM annonces WHERE id_annonce = ?', [req.params.id]);
     res.json({ message: 'Annonce supprimee.' });
   } catch (err) {

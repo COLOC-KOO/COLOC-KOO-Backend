@@ -1,4 +1,5 @@
 function mapUserRow(row) {
+  const roleLabel = toPublicRole(row.nom_role);
   return {
     id: row.id_utilisateur,
     email: row.email,
@@ -8,6 +9,8 @@ function mapUserRow(row) {
     name: `${row.prenom} ${row.nom}`.trim(),
     initials: `${(row.prenom || '').charAt(0)}${(row.nom || '').charAt(0)}`.toUpperCase(),
     role: row.nom_role,
+    poste: roleLabel,
+    roleLabel,
     avatar: row.profile_picture,
     age: row.age,
     bio: row.bio,
@@ -19,6 +22,18 @@ function mapUserRow(row) {
     statut: row.statut,
     createdAt: row.date_inscription,
   };
+}
+
+function toPublicRole(role) {
+  const map = {
+    super_admin: 'superadmin',
+    admin: 'admin',
+    moderator: 'moderateur',
+    proprio: 'proprietaire',
+    coloc: 'colocataire',
+    agent: 'admin',
+  };
+  return map[role] || role || 'colocataire';
 }
 
 function splitPipe(value) {
@@ -95,4 +110,5 @@ module.exports = {
   hydrateAnnonce,
   splitPipe,
   parseJsonMaybe,
+  toPublicRole,
 };
