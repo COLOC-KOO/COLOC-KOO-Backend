@@ -10,6 +10,7 @@ router.use('/candidatures', require('./candidatures.routes'));
 router.use('/partenaires', require('./partenaires.routes'));
 router.use('/contact', require('./contact.routes'));
 router.use('/notifications', require('./notifications.routes'));
+router.use('/messages', require('./messages.routes'));
 router.use('/backoffice', require('./backoffice.routes'));
 
 module.exports = router;
