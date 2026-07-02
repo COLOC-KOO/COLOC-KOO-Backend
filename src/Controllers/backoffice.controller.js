@@ -31,13 +31,14 @@ async function queue(req, res, next) {
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-             v.nom_ville, ch.prix_loyer,
+             v.nom_ville, r.nom_region, ch.prix_loyer,
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
+      JOIN regions r ON r.id_region = v.id_region
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
@@ -90,7 +91,15 @@ async function stats(req, res, next) {
 async function moderateAnnonce(req, res, next) {
   try {
     const { statut } = req.body;
-    await query('UPDATE annonces SET statut = ? WHERE id_annonce = ?', [statut, req.params.id]);
+    const allowedStatuses = ['pending', 'active', 'rejected', 'archived', 'expired', 'en_attente', 'refusee', 'terminee'];
+    if (!allowedStatuses.includes(statut)) {
+      return res.status(400).json({ message: 'Statut invalide.' });
+    }
+    const publicationSql = statut === 'active' ? ', date_publication = COALESCE(date_publication, NOW())' : '';
+    await query(
+      `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
+      [statut, req.params.id]
+    );
     res.json({ message: 'Annonce mise a jour.' });
   } catch (err) {
     next(err);
