@@ -56,6 +56,21 @@ async function ensureUserProfileColumn() {
   }
 }
 
+async function ensureAnnoncePhotoColumn() {
+  try {
+    const dbPool = await initPool();
+    const [photoColumns] = await dbPool.query("SHOW COLUMNS FROM photos_annonces LIKE 'url'");
+    if (photoColumns.length > 0) {
+      const type = String(photoColumns[0].Type || '').toUpperCase();
+      if (!type.includes('TEXT')) {
+        await dbPool.query('ALTER TABLE photos_annonces MODIFY COLUMN url MEDIUMTEXT NOT NULL');
+      }
+    }
+  } catch (error) {
+    console.warn('Impossible d’ajuster la colonne des photos d’annonce:', error.message);
+  }
+}
+
 async function getPool() {
   return initPool();
 }
@@ -77,4 +92,5 @@ module.exports = {
   getPool,
   testConnection,
   ensureUserProfileColumn,
+  ensureAnnoncePhotoColumn,
 };
