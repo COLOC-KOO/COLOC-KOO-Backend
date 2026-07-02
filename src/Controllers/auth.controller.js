@@ -110,9 +110,30 @@ async function me(req, res, next) {
 
 async function updateMe(req, res, next) {
   try {
-    const allowed = ['nom', 'prenom', 'telephone', 'bio', 'age', 'profession', 'profile_picture', 'ville_actuelle', 'ville_origine', 'langue_preferee', 'navigation_light'];
+    const allowed = ['email', 'nom', 'prenom', 'telephone', 'bio', 'profession', 'profile_picture', 'langue_preferee', 'navigation_light'];
     const pairs = [];
     const values = [];
+
+    if (req.body.date_naissance !== undefined) {
+      const birthDate = req.body.date_naissance ? new Date(req.body.date_naissance) : null;
+      const age = birthDate && !Number.isNaN(birthDate.getTime())
+        ? computeAge(birthDate)
+        : null;
+      pairs.push('date_naissance = ?');
+      values.push(birthDate ? birthDate.toISOString().slice(0, 10) : null);
+      pairs.push('age = ?');
+      values.push(age);
+    }
+
+    if (req.body.ville_actuelle !== undefined) {
+      pairs.push('ville_actuelle = ?');
+      values.push(await resolveCityId(req.body.ville_actuelle));
+    }
+
+    if (req.body.ville_origine !== undefined) {
+      pairs.push('ville_origine = ?');
+      values.push(await resolveCityId(req.body.ville_origine));
+    }
 
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
@@ -132,6 +153,25 @@ async function updateMe(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+async function resolveCityId(cityValue) {
+  if (cityValue === null || cityValue === undefined || cityValue === '') return null;
+  if (typeof cityValue === 'number' && Number.isInteger(cityValue)) return cityValue;
+  const text = String(cityValue).trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const rows = await query('SELECT id_ville FROM villes WHERE LOWER(nom_ville) = LOWER(?) LIMIT 1', [text]);
+  return rows[0]?.id_ville ?? null;
+}
+
+function computeAge(birthDate) {
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const monthDiff = today.getMonth() - birthDate.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+    age -= 1;
+  }
+  return Math.max(0, age);
 }
 
 async function changePassword(req, res, next) {

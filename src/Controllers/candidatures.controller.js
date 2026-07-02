@@ -4,19 +4,21 @@ async function listMine(req, res, next) {
   try {
     const rows = await query(
       `
-      SELECT c.*, a.titre, a.quartier, a.id_annonce, ch.prix_loyer,
-             GROUP_CONCAT(DISTINCT CONCAT(me.id_utilisateur, '::', me.statut) ORDER BY me.id SEPARATOR '||') AS membres
+      SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
+             a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer
       FROM candidatures c
-      JOIN annonces a ON a.id_annonce = c.id_annonce
+      LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
-      LEFT JOIN candidature_membres me ON me.id_candidature = c.id_candidature
       WHERE c.id_utilisateur = ?
-      GROUP BY c.id_candidature
       ORDER BY c.date_creation DESC
       `,
       [req.user.id]
     );
-    res.json(rows);
+
+    res.json(rows.map((row) => ({
+      ...row,
+      membres: [],
+    })));
   } catch (err) {
     next(err);
   }
@@ -26,15 +28,20 @@ async function listAll(req, res, next) {
   try {
     const rows = await query(
       `
-      SELECT c.*, a.titre, a.quartier, a.id_annonce, ch.prix_loyer
+      SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
+             a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer
       FROM candidatures c
-      JOIN annonces a ON a.id_annonce = c.id_annonce
+      LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       ORDER BY c.date_creation DESC
       LIMIT 500
       `
     );
-    res.json(rows);
+
+    res.json(rows.map((row) => ({
+      ...row,
+      membres: [],
+    })));
   } catch (err) {
     next(err);
   }
@@ -53,14 +60,18 @@ async function create(req, res, next) {
     );
 
     for (const membre of membres) {
+      if (!membre?.nom) continue;
       await query(
         'INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, membre.nom, membre.initiales, membre.statut || 'en_attente', membre.profession || null, membre.age || null]
+        [id, membre.nom, membre.initiales || null, membre.statut || 'en_attente', membre.profession || null, membre.age || null]
       );
     }
 
     const created = await query('SELECT * FROM candidatures WHERE id_candidature = ? LIMIT 1', [id]);
-    res.status(201).json(created[0]);
+    res.status(201).json({
+      ...created[0],
+      membres: [],
+    });
   } catch (err) {
     next(err);
   }

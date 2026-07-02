@@ -2,13 +2,14 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const { createApp } = require('./app');
-const { testConnection } = require('./Config/connectDatabase');
+const { testConnection, ensureUserProfileColumn } = require('./Config/connectDatabase');
 
 const PORT = process.env.PORT || 5000;
 const app = createApp();
 
 async function start() {
   await testConnection();
+  await ensureUserProfileColumn();
 
   const server = app.listen(PORT, () => {
     console.log(`Serveur demarre sur le port ${PORT}`);
