@@ -3,9 +3,19 @@ const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 
 async function list(req, res, next) {
   try {
-    const { q, type, ville, quartier, minPrice, maxPrice, statut = 'active' } = req.query;
+    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine } = req.query;
     const clauses = [];
     const values = [];
+    const isMine = mine === '1' || mine === 'true' || mine === true;
+    const statut = isMine && rawStatut === 'active' ? 'all' : rawStatut;
+
+    if (isMine) {
+      if (!req.user) {
+        return res.status(401).json({ message: 'Authentification requise.' });
+      }
+      clauses.push('a.id_utilisateur = ?');
+      values.push(req.user.id);
+    }
 
     if (statut && statut !== 'all') {
       clauses.push('a.statut = ?');

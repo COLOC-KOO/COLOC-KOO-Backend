@@ -4,17 +4,25 @@ async function listThreads(req, res, next) {
   try {
     const rows = await query(
       `SELECT
-         CASE WHEN id_expediteur = ? THEN id_destinataire ELSE id_expediteur END AS interlocuteur_id,
-         MAX(date_envoi) AS dernier_message,
+         CASE WHEN m.id_expediteur = ? THEN m.id_destinataire ELSE m.id_expediteur END AS interlocuteur_id,
+         MAX(m.date_envoi) AS dernier_message,
          COUNT(*) AS total_messages,
-         SUM(CASE WHEN id_destinataire = ? AND est_lu = 0 THEN 1 ELSE 0 END) AS non_lus
-       FROM messages
-       WHERE id_expediteur = ? OR id_destinataire = ?
+         SUM(CASE WHEN m.id_destinataire = ? AND m.est_lu = 0 THEN 1 ELSE 0 END) AS non_lus,
+         MAX(CASE WHEN m.id_expediteur = ? THEN de.nom ELSE ex.nom END) AS interlocuteur_nom,
+         MAX(CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END) AS interlocuteur_prenom
+       FROM messages m
+       JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
+       JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
+       WHERE m.id_expediteur = ? OR m.id_destinataire = ?
        GROUP BY interlocuteur_id
        ORDER BY dernier_message DESC`,
-      [req.user.id, req.user.id, req.user.id, req.user.id]
+      [req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, req.user.id]
     );
-    res.json(rows);
+    res.json(rows.map((row) => ({
+      ...row,
+      interlocuteur_nom: row.interlocuteur_nom || '',
+      interlocuteur_prenom: row.interlocuteur_prenom || '',
+    })));
   } catch (err) {
     next(err);
   }
