@@ -1,8 +1,8 @@
 const router = require('express').Router();
 const controller = require('../Controllers/annonces.controller');
-const { requireAuth, requireRole } = require('../Middleware/auth.middleware');
+const { requireAuth, requireRole, optionalAuth } = require('../Middleware/auth.middleware');
 
-router.get('/', controller.list);
+router.get('/', optionalAuth, controller.list);
 router.get('/:id', controller.getById);
 router.post('/', requireAuth, controller.create);
 router.patch('/:id', requireAuth, controller.update);
