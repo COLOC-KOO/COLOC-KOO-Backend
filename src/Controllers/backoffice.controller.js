@@ -1,23 +1,96 @@
-const { query } = require('../Services/db.service');
+const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
+
+const WARNING_REASONS = [
+  'Renseignements manquants',
+  'Prix a justifier',
+  'Photos non representatives',
+  'Offre non conforme (pas une coloc)',
+  'Suspicion d arnaque',
+  'Contenu inapproprie',
+  'Comportement/ harcelement',
+  'Notification de Suspension',
+];
+
+function actorId(req) {
+  return req.user?.id || req.user?.id_utilisateur || null;
+}
+
+async function ensureBackofficeSchema() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS journal_actions (
+      id_action INT NOT NULL AUTO_INCREMENT,
+      id_utilisateur INT NULL,
+      action VARCHAR(80) NOT NULL,
+      cible_type VARCHAR(80) NULL,
+      cible_id INT NULL,
+      details JSON NULL,
+      date_action DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id_action),
+      KEY idx_journal_action_date (date_action),
+      KEY idx_journal_action_type (action)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS objectifs_equipe (
+      id_objectif INT NOT NULL AUTO_INCREMENT,
+      libelle VARCHAR(255) NOT NULL,
+      objectif INT NOT NULL DEFAULT 0,
+      realise INT NOT NULL DEFAULT 0,
+      periode ENUM('jour','semaine','mois','trimestre','annee') NOT NULL DEFAULT 'mois',
+      statut ENUM('actif','termine','archive') NOT NULL DEFAULT 'actif',
+      date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id_objectif)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS configuration_backoffice (
+      cle VARCHAR(120) NOT NULL,
+      valeur JSON NULL,
+      date_modification DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (cle)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await query("ALTER TABLE contrats MODIFY COLUMN statut ENUM('a-emettre','a-planifier','brouillon','emis','envoye','signe','annule') NOT NULL DEFAULT 'a-emettre'").catch(() => {});
+  await query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'").catch(() => {});
+}
+
+async function logAction(req, action, cibleType, cibleId, details = null) {
+  await ensureBackofficeSchema();
+  await query(
+    `INSERT INTO journal_actions (id_utilisateur, action, cible_type, cible_id, details)
+     VALUES (?, ?, ?, ?, ?)`,
+    [actorId(req), action, cibleType, cibleId || null, details ? JSON.stringify(details) : null]
+  );
+}
 
 async function dashboard(req, res, next) {
   try {
-    const [queue, validated, members, month, rate] = await Promise.all([
+    const [queue, validated, members, month, rate, reports, candidates, contracts, payments] = await Promise.all([
       query("SELECT COUNT(*) AS n FROM annonces WHERE statut = 'pending'"),
       query("SELECT COUNT(*) AS n FROM annonces WHERE statut = 'active' AND DATE(date_publication) = CURDATE()"),
       query("SELECT COUNT(*) AS n FROM utilisateurs WHERE statut = 'active'"),
       query("SELECT COUNT(*) AS n FROM annonces WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
       query("SELECT ROUND(100 * SUM(CASE WHEN statut = 'active' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) AS n FROM annonces"),
+      query("SELECT COUNT(*) AS n FROM signalements WHERE statut IN ('new','in_progress')"),
+      query("SELECT COUNT(*) AS n FROM candidatures WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
+      query("SELECT COUNT(*) AS n FROM contrats WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
+      query("SELECT COALESCE(SUM(montant_recu), 0) AS n FROM paiements WHERE MONTH(date_paiement) = MONTH(CURDATE()) AND YEAR(date_paiement) = YEAR(CURDATE()) AND statut IN ('conforme','valide')"),
     ]);
 
     res.json({
       annoncesFile: Number(queue[0]?.n || 0),
       validationsAujourdhui: Number(validated[0]?.n || 0),
-      signalements: 0,
+      signalements: Number(reports[0]?.n || 0),
       membresActifs: Number(members[0]?.n || 0),
       annoncesMois: Number(month[0]?.n || 0),
       tauxValidation: Number(rate[0]?.n || 0),
+      candidaturesMois: Number(candidates[0]?.n || 0),
+      contratsMois: Number(contracts[0]?.n || 0),
+      chiffreAffairesMois: Number(payments[0]?.n || 0),
       objectifJour: 30,
       progressObjectif: Math.min(100, Math.round((Number(validated[0]?.n || 0) / 30) * 100)),
     });
@@ -57,14 +130,54 @@ async function queue(req, res, next) {
 
 async function members(req, res, next) {
   try {
+    const { role, q, statut } = req.query;
+    const roleMap = {
+      locataires: 'coloc',
+      colocataires: 'coloc',
+      proprietaires: 'proprio',
+      agences: 'agent',
+      admins: ['admin', 'super_admin', 'moderator'],
+    };
+    const clauses = [];
+    const values = [];
+    if (role && role !== 'all' && role !== 'tous') {
+      const mapped = roleMap[String(role).toLowerCase()] || role;
+      if (Array.isArray(mapped)) {
+        clauses.push(`r.nom_role IN (${mapped.map(() => '?').join(',')})`);
+        values.push(...mapped);
+      } else {
+        clauses.push('r.nom_role = ?');
+        values.push(mapped);
+      }
+    }
+    if (statut && statut !== 'all') {
+      clauses.push('u.statut = ?');
+      values.push(statut);
+    }
+    if (q) {
+      clauses.push('(u.nom LIKE ? OR u.prenom LIKE ? OR u.email LIKE ? OR u.telephone LIKE ?)');
+      values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+    }
+
     const rows = await query(
-      `SELECT u.*, r.nom_role
+      `SELECT u.*, r.nom_role,
+              COUNT(DISTINCT a.id_annonce) AS annonces_count,
+              COUNT(DISTINCT c.id_candidature) AS candidatures_count
        FROM utilisateurs u
        JOIN roles r ON r.id_role = u.id_role
+       LEFT JOIN annonces a ON a.id_utilisateur = u.id_utilisateur
+       LEFT JOIN candidatures c ON c.id_utilisateur = u.id_utilisateur
+       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+       GROUP BY u.id_utilisateur
        ORDER BY u.date_inscription DESC
-       LIMIT 500`
+       LIMIT 500`,
+      values
     );
-    res.json(rows.map(mapUserRow));
+    res.json(rows.map(row => ({
+      ...mapUserRow(row),
+      annoncesCount: Number(row.annonces_count || 0),
+      candidaturesCount: Number(row.candidatures_count || 0),
+    })));
   } catch (err) {
     next(err);
   }
@@ -100,6 +213,7 @@ async function moderateAnnonce(req, res, next) {
       `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
       [statut, req.params.id]
     );
+    await logAction(req, statut === 'active' ? 'Validation' : statut === 'rejected' ? 'Rejet' : 'Correction', 'annonce', req.params.id, { statut });
     res.json({ message: 'Annonce mise a jour.' });
   } catch (err) {
     next(err);
@@ -108,12 +222,469 @@ async function moderateAnnonce(req, res, next) {
 
 async function moderateMember(req, res, next) {
   try {
-    const { statut } = req.body;
-    await query('UPDATE utilisateurs SET statut = ? WHERE id_utilisateur = ?', [statut, req.params.id]);
+    const { statut, raison, date_suspension_fin } = req.body;
+    await query('UPDATE utilisateurs SET statut = ?, date_suspension_fin = ? WHERE id_utilisateur = ?', [statut, date_suspension_fin || null, req.params.id]);
+    await logAction(req, statut === 'suspended' ? 'Suspension' : 'Correction', 'utilisateur', req.params.id, { statut, raison });
     res.json({ message: 'Membre mis a jour.' });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { dashboard, queue, members, stats, moderateAnnonce, moderateMember };
+async function signalements(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT s.*,
+              us.nom AS signaleur_nom, us.prenom AS signaleur_prenom, us.email AS signaleur_email,
+              uc.nom AS cible_nom, uc.prenom AS cible_prenom, uc.email AS cible_email,
+              a.titre AS annonce_titre, m.contenu AS message_contenu
+       FROM signalements s
+       LEFT JOIN utilisateurs us ON us.id_utilisateur = s.id_utilisateur_signalant
+       LEFT JOIN utilisateurs uc ON uc.id_utilisateur = s.id_utilisateur_cible
+       LEFT JOIN annonces a ON a.id_annonce = s.id_annonce
+       LEFT JOIN messages m ON m.id_message = s.id_message
+       ORDER BY s.date_signalement DESC
+       LIMIT 500`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function signalementConversation(req, res, next) {
+  try {
+    const reportRows = await query('SELECT * FROM signalements WHERE id_signalement = ? LIMIT 1', [req.params.id]);
+    if (reportRows.length === 0) return res.status(404).json({ message: 'Signalement introuvable.' });
+    const report = reportRows[0];
+    let a = report.id_utilisateur_signalant;
+    let b = report.id_utilisateur_cible;
+    if ((!a || !b) && report.id_message) {
+      const msg = await query('SELECT id_expediteur, id_destinataire FROM messages WHERE id_message = ? LIMIT 1', [report.id_message]);
+      a = a || msg[0]?.id_expediteur;
+      b = b || msg[0]?.id_destinataire;
+    }
+    const messages = a && b ? await query(
+      `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
+              de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
+              an.titre AS annonce_titre
+       FROM messages m
+       JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
+       JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
+       LEFT JOIN annonces an ON an.id_annonce = m.id_annonce
+       WHERE ((m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?))
+         AND (? IS NULL OR m.id_annonce = ? OR m.id_annonce IS NULL)
+       ORDER BY m.date_envoi ASC`,
+      [a, b, b, a, report.id_annonce, report.id_annonce]
+    ) : [];
+    res.json({ signalement: report, membreA: a, membreB: b, messages });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateSignalement(req, res, next) {
+  try {
+    const { statut = 'resolved', action, raison } = req.body;
+    await query(
+      'UPDATE signalements SET statut = ?, date_resolution = IF(? IN ("resolved","dismissed"), NOW(), date_resolution) WHERE id_signalement = ?',
+      [statut, statut, req.params.id]
+    );
+    await logAction(req, action === 'dismiss' ? 'Classement sans suite' : 'Correction', 'signalement', req.params.id, { statut, raison });
+    res.json({ message: 'Signalement mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function warningReasons(req, res) {
+  res.json(WARNING_REASONS);
+}
+
+async function sendWarning(req, res, next) {
+  try {
+    const { id_utilisateur, raison, contenu } = req.body;
+    if (!id_utilisateur) return res.status(400).json({ message: 'Utilisateur requis.' });
+    const subject = raison || 'Avertissement ColocKOO';
+    const text = contenu || `Avertissement: ${subject}`;
+    const id = await insertAndGetId(
+      `INSERT INTO messages (id_expediteur, id_destinataire, sujet, contenu, est_lu)
+       VALUES (?, ?, ?, ?, 0)`,
+      [actorId(req), id_utilisateur, subject, text]
+    );
+    await query(
+      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+       VALUES (?, 'message', ?, ?, ?)`,
+      [id_utilisateur, subject, text, `/admin/messages?message=${id}`]
+    ).catch(() => {});
+    await logAction(req, 'Message', 'utilisateur', id_utilisateur, { raison: subject, id_message: id });
+    res.status(201).json({ id_message: id, redirect: '/admin/messages' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function conversations(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
+              GREATEST(id_expediteur, id_destinataire) AS membre_b,
+              MAX(date_envoi) AS dernier_message,
+              COUNT(*) AS total_messages,
+              SUM(CASE WHEN est_lu = 0 THEN 1 ELSE 0 END) AS non_lus
+       FROM messages
+       GROUP BY membre_a, membre_b
+       ORDER BY dernier_message DESC
+       LIMIT 300`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function conversationMessages(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
+              de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
+              a.titre AS annonce_titre
+       FROM messages m
+       JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
+       JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
+       LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
+       WHERE (m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?)
+       ORDER BY m.date_envoi ASC`,
+      [req.params.a, req.params.b, req.params.b, req.params.a]
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function contactMessages(req, res, next) {
+  try {
+    const rows = await query('SELECT * FROM messages_contact ORDER BY date_creation DESC LIMIT 500');
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function replyContactMessage(req, res, next) {
+  try {
+    const { contenu, statut = 'read' } = req.body;
+    await query('UPDATE messages_contact SET statut = ? WHERE id_message = ?', [statut, req.params.id]);
+    await logAction(req, 'Message', 'message_contact', req.params.id, { contenu });
+    res.json({ message: 'Reponse enregistree.', redirect: '/admin/messages' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function journal(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const rows = await query(
+      `SELECT ja.*, u.nom, u.prenom, u.email
+       FROM journal_actions ja
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = ja.id_utilisateur
+       ORDER BY ja.date_action DESC
+       LIMIT 1000`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function suiviMissions(req, res, next) {
+  try {
+    const [services, contratsCount, rdv, ca, demandes] = await Promise.all([
+      query("SELECT COUNT(*) AS n FROM demandes_ckoo WHERE statut IN ('a-contacter','en-cours')"),
+      query("SELECT COUNT(*) AS n FROM contrats WHERE MONTH(date_creation)=MONTH(CURDATE()) AND YEAR(date_creation)=YEAR(CURDATE())"),
+      query("SELECT COUNT(*) AS n FROM demandes_ckoo WHERE date_rendez_vous >= NOW()"),
+      query("SELECT COALESCE(SUM(montant_recu),0) AS n FROM paiements WHERE statut IN ('conforme','valide') AND MONTH(date_paiement)=MONTH(CURDATE()) AND YEAR(date_paiement)=YEAR(CURDATE())"),
+      query(`SELECT d.*, a.titre, u.nom, u.prenom
+             FROM demandes_ckoo d
+             JOIN annonces a ON a.id_annonce = d.id_annonce
+             JOIN utilisateurs u ON u.id_utilisateur = d.id_utilisateur
+             ORDER BY d.date_creation DESC LIMIT 200`),
+    ]);
+    res.json({
+      servicesEnCours: Number(services[0]?.n || 0),
+      contratsEmisMois: Number(contratsCount[0]?.n || 0),
+      rendezVousAvenir: Number(rdv[0]?.n || 0),
+      chiffreAffairesMois: Number(ca[0]?.n || 0),
+      demandes,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function servicesCkoo(req, res, next) {
+  try {
+    const rows = await query('SELECT * FROM services_ckoo ORDER BY est_actif DESC, nom ASC');
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createServiceCkoo(req, res, next) {
+  try {
+    const { cle_service, nom, description, prix, unite = 'heure', est_actif = 1 } = req.body;
+    if (!nom) return res.status(400).json({ message: 'Nom requis.' });
+    const id = await insertAndGetId(
+      'INSERT INTO services_ckoo (cle_service, nom, description, prix, unite, est_actif) VALUES (?, ?, ?, ?, ?, ?)',
+      [cle_service || `service_${Date.now()}`, nom, description || null, prix || 0, unite, est_actif ? 1 : 0]
+    );
+    await logAction(req, 'Correction', 'service_ckoo', id, { operation: 'creation' });
+    res.status(201).json({ id_service: id });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateServiceCkoo(req, res, next) {
+  try {
+    const allowed = ['cle_service', 'nom', 'description', 'prix', 'unite', 'est_actif'];
+    const sets = [];
+    const values = [];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        sets.push(`${key} = ?`);
+        values.push(req.body[key]);
+      }
+    }
+    if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
+    values.push(req.params.id);
+    await query(`UPDATE services_ckoo SET ${sets.join(', ')} WHERE id_service = ?`, values);
+    await logAction(req, 'Correction', 'service_ckoo', req.params.id, req.body);
+    res.json({ message: 'Service mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteServiceCkoo(req, res, next) {
+  try {
+    await query('UPDATE services_ckoo SET est_actif = 0 WHERE id_service = ?', [req.params.id]);
+    await logAction(req, 'Correction', 'service_ckoo', req.params.id, { operation: 'desactivation' });
+    res.json({ message: 'Service desactive.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function contrats(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const rows = await query(
+      `SELECT c.*, a.titre, a.quartier, v.nom_ville,
+              COUNT(pc.id) AS parties_count
+       FROM contrats c
+       JOIN annonces a ON a.id_annonce = c.id_annonce
+       JOIN villes v ON v.id_ville = a.id_ville
+       LEFT JOIN parties_contrats pc ON pc.id_contrat = c.id_contrat
+       GROUP BY c.id_contrat
+       ORDER BY c.date_creation DESC
+       LIMIT 500`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function contratDetails(req, res, next) {
+  try {
+    const rows = await query('SELECT * FROM contrats WHERE id_contrat = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ message: 'Contrat introuvable.' });
+    const parties = await query('SELECT * FROM parties_contrats WHERE id_contrat = ? ORDER BY role, id', [req.params.id]);
+    res.json({ ...rows[0], parties });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function saveContrat(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const { reference, id_annonce, type = 'contrat', statut = 'a-emettre', montant_total, parties = [] } = req.body;
+    let id = req.params.id;
+    if (!id_annonce) return res.status(400).json({ message: 'Annonce requise.' });
+    if (id) {
+      await query(
+        'UPDATE contrats SET reference = ?, id_annonce = ?, type = ?, statut = ?, montant_total = ? WHERE id_contrat = ?',
+        [reference, id_annonce, type, statut, montant_total || null, id]
+      );
+      await query('DELETE FROM parties_contrats WHERE id_contrat = ?', [id]);
+    } else {
+      id = await insertAndGetId(
+        'INSERT INTO contrats (reference, id_annonce, type, statut, montant_total) VALUES (?, ?, ?, ?, ?)',
+        [reference || `CT-${Date.now().toString().slice(-8)}`, id_annonce, type, statut, montant_total || null]
+      );
+    }
+    for (const partie of parties) {
+      await query(
+        `INSERT INTO parties_contrats (id_contrat, id_utilisateur, nom_complet, role, cin, telephone, email, commentaire)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, partie.id_utilisateur || null, partie.nom_complet || null, partie.role || 'locataire', partie.cin || null, partie.telephone || null, partie.email || null, partie.commentaire || null]
+      );
+    }
+    await logAction(req, 'Correction', 'contrat', id, { statut });
+    res.json({ id_contrat: Number(id), message: 'Contrat enregistre.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function contratAction(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const statusByAction = { signer: 'signe', envoyer: 'envoye', emettre: 'emis' };
+    const statut = statusByAction[req.params.action];
+    if (!statut) return res.status(400).json({ message: 'Action invalide.' });
+    await query(
+      'UPDATE contrats SET statut = ?, date_emission = IF(? IN ("emis","envoye"), COALESCE(date_emission, NOW()), date_emission) WHERE id_contrat = ?',
+      [statut, statut, req.params.id]
+    );
+    if (req.params.action === 'envoyer') {
+      const parties = await query('SELECT id_utilisateur FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL', [req.params.id]);
+      for (const partie of parties) {
+        await query(
+          `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+           VALUES (?, 'systeme', 'Contrat disponible', 'Un contrat est disponible pour signature.', ?)`,
+          [partie.id_utilisateur, `/contrats/${req.params.id}`]
+        ).catch(() => {});
+      }
+    }
+    await logAction(req, req.params.action === 'signer' ? 'Signature' : 'Message', 'contrat', req.params.id, { statut });
+    res.json({ message: 'Contrat mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function partenairesStats(req, res, next) {
+  try {
+    const [regions, proprietaires, total] = await Promise.all([
+      query(`SELECT r.nom_region, COUNT(a.id_annonce) AS total_annonces
+             FROM regions r
+             LEFT JOIN villes v ON v.id_region = r.id_region
+             LEFT JOIN annonces a ON a.id_ville = v.id_ville
+             GROUP BY r.id_region
+             ORDER BY total_annonces DESC, r.nom_region ASC`),
+      query(`SELECT u.id_utilisateur, u.nom, u.prenom, u.email, COUNT(a.id_annonce) AS total_annonces
+             FROM utilisateurs u
+             JOIN roles ro ON ro.id_role = u.id_role
+             LEFT JOIN annonces a ON a.id_utilisateur = u.id_utilisateur
+             WHERE ro.nom_role IN ('proprio','agent','admin','super_admin')
+             GROUP BY u.id_utilisateur
+             ORDER BY total_annonces DESC, u.nom ASC`),
+      query('SELECT COUNT(*) AS total_annonces FROM annonces'),
+    ]);
+    res.json({ totalAnnonces: Number(total[0]?.total_annonces || 0), regions, proprietaires });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function administration(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const [versements, objectifs, configuration, performance, statsColoc] = await Promise.all([
+      query(`SELECT p.*, u.nom, u.prenom, a.titre AS annonce_titre
+             FROM paiements p
+             JOIN utilisateurs u ON u.id_utilisateur = p.id_utilisateur
+             LEFT JOIN annonces a ON a.id_annonce = p.id_annonce
+             ORDER BY p.date_paiement DESC LIMIT 300`),
+      query('SELECT * FROM objectifs_equipe ORDER BY date_creation DESC LIMIT 100'),
+      query('SELECT * FROM configuration_backoffice ORDER BY cle ASC'),
+      query(`SELECT
+               (SELECT COUNT(*) FROM annonces WHERE statut='active') AS annonces_actives,
+               (SELECT COUNT(*) FROM utilisateurs WHERE statut='active') AS utilisateurs_actifs,
+               (SELECT COUNT(*) FROM messages WHERE DATE(date_envoi)=CURDATE()) AS messages_jour,
+               (SELECT COUNT(*) FROM signalements WHERE statut IN ('new','in_progress')) AS signalements_ouverts`),
+      query(`SELECT r.nom_region, COUNT(DISTINCT a.id_annonce) AS annonces, COUNT(DISTINCT c.id_candidature) AS candidatures
+             FROM regions r
+             LEFT JOIN villes v ON v.id_region = r.id_region
+             LEFT JOIN annonces a ON a.id_ville = v.id_ville
+             LEFT JOIN candidatures c ON c.id_annonce = a.id_annonce
+             GROUP BY r.id_region
+             ORDER BY annonces DESC`),
+    ]);
+    res.json({ versements, objectifs, configuration, performance: performance[0] || {}, statistiquesColocation: statsColoc });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function saveConfiguration(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const { cle, valeur } = req.body;
+    if (!cle) return res.status(400).json({ message: 'Cle requise.' });
+    await query(
+      'INSERT INTO configuration_backoffice (cle, valeur) VALUES (?, ?) ON DUPLICATE KEY UPDATE valeur = VALUES(valeur), date_modification = NOW()',
+      [cle, JSON.stringify(valeur ?? null)]
+    );
+    await logAction(req, 'Correction', 'configuration', null, { cle });
+    res.json({ message: 'Configuration enregistree.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function saveObjectif(req, res, next) {
+  try {
+    await ensureBackofficeSchema();
+    const { libelle, objectif = 0, realise = 0, periode = 'mois', statut = 'actif' } = req.body;
+    let id = req.params.id;
+    if (!libelle) return res.status(400).json({ message: 'Libelle requis.' });
+    if (id) {
+      await query('UPDATE objectifs_equipe SET libelle=?, objectif=?, realise=?, periode=?, statut=? WHERE id_objectif=?', [libelle, objectif, realise, periode, statut, id]);
+    } else {
+      id = await insertAndGetId('INSERT INTO objectifs_equipe (libelle, objectif, realise, periode, statut) VALUES (?, ?, ?, ?, ?)', [libelle, objectif, realise, periode, statut]);
+    }
+    await logAction(req, 'Correction', 'objectif', id, { libelle, objectif, realise });
+    res.json({ id_objectif: Number(id), message: 'Objectif enregistre.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  dashboard,
+  queue,
+  members,
+  stats,
+  moderateAnnonce,
+  moderateMember,
+  signalements,
+  signalementConversation,
+  updateSignalement,
+  warningReasons,
+  sendWarning,
+  conversations,
+  conversationMessages,
+  contactMessages,
+  replyContactMessage,
+  journal,
+  suiviMissions,
+  servicesCkoo,
+  createServiceCkoo,
+  updateServiceCkoo,
+  deleteServiceCkoo,
+  contrats,
+  contratDetails,
+  saveContrat,
+  contratAction,
+  partenairesStats,
+  administration,
+  saveConfiguration,
+  saveObjectif,
+};
