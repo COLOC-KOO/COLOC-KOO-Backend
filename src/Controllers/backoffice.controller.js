@@ -479,6 +479,61 @@ async function deleteServiceCkoo(req, res, next) {
   }
 }
 
+async function partenaires(req, res, next) {
+  try {
+    const rows = await query('SELECT * FROM partenaires ORDER BY actif DESC, niveau DESC, nom ASC');
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createPartenaire(req, res, next) {
+  try {
+    const { nom, secteur, niveau, remise, engagement, logo, actif = 1 } = req.body;
+    if (!nom) return res.status(400).json({ message: 'Nom requis.' });
+    const id = await insertAndGetId(
+      'INSERT INTO partenaires (nom, secteur, niveau, remise, engagement, logo, actif) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [nom, secteur || null, niveau || null, remise || null, engagement || null, logo || null, actif ? 1 : 0]
+    );
+    await logAction(req, 'Creation', 'partenaire', id, { operation: 'creation' });
+    res.status(201).json({ id_partenaire: id });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updatePartenaire(req, res, next) {
+  try {
+    const allowed = ['nom', 'secteur', 'niveau', 'remise', 'engagement', 'logo', 'actif'];
+    const sets = [];
+    const values = [];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        sets.push(`${key} = ?`);
+        values.push(req.body[key]);
+      }
+    }
+    if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
+    values.push(req.params.id);
+    await query(`UPDATE partenaires SET ${sets.join(', ')} WHERE id_partenaire = ?`, values);
+    await logAction(req, 'Correction', 'partenaire', req.params.id, req.body);
+    res.json({ message: 'Partenaire mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deletePartenaire(req, res, next) {
+  try {
+    await query('DELETE FROM partenaires WHERE id_partenaire = ?', [req.params.id]);
+    await logAction(req, 'Correction', 'partenaire', req.params.id, { operation: 'suppression' });
+    res.json({ message: 'Partenaire supprime.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function contrats(req, res, next) {
   try {
     await ensureBackofficeSchema();
@@ -683,6 +738,10 @@ module.exports = {
   contratDetails,
   saveContrat,
   contratAction,
+  partenaires,
+  createPartenaire,
+  updatePartenaire,
+  deletePartenaire,
   partenairesStats,
   administration,
   saveConfiguration,
