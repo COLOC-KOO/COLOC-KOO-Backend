@@ -56,18 +56,47 @@ async function ensureUserProfileColumn() {
   }
 }
 
-async function ensureAnnoncePhotoColumn() {
+async function ensureBusinessSchema() {
   try {
     const dbPool = await initPool();
-    const [photoColumns] = await dbPool.query("SHOW COLUMNS FROM photos_annonces LIKE 'url'");
-    if (photoColumns.length > 0) {
-      const type = String(photoColumns[0].Type || '').toUpperCase();
-      if (!type.includes('TEXT')) {
-        await dbPool.query('ALTER TABLE photos_annonces MODIFY COLUMN url MEDIUMTEXT NOT NULL');
-      }
-    }
+    await dbPool.query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'");
+    await dbPool.query("ALTER TABLE contrats MODIFY COLUMN statut ENUM('a-emettre','a-planifier','brouillon','emis','envoye','signe','annule') NOT NULL DEFAULT 'a-emettre'");
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS journal_actions (
+        id_action INT NOT NULL AUTO_INCREMENT,
+        id_utilisateur INT NULL,
+        action VARCHAR(80) NOT NULL,
+        cible_type VARCHAR(80) NULL,
+        cible_id INT NULL,
+        details JSON NULL,
+        date_action DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id_action),
+        KEY idx_journal_action_date (date_action),
+        KEY idx_journal_action_type (action)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS objectifs_equipe (
+        id_objectif INT NOT NULL AUTO_INCREMENT,
+        libelle VARCHAR(255) NOT NULL,
+        objectif INT NOT NULL DEFAULT 0,
+        realise INT NOT NULL DEFAULT 0,
+        periode ENUM('jour','semaine','mois','trimestre','annee') NOT NULL DEFAULT 'mois',
+        statut ENUM('actif','termine','archive') NOT NULL DEFAULT 'actif',
+        date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id_objectif)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS configuration_backoffice (
+        cle VARCHAR(120) NOT NULL,
+        valeur JSON NULL,
+        date_modification DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (cle)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
   } catch (error) {
-    console.warn('Impossible d’ajuster la colonne des photos d’annonce:', error.message);
+    console.warn('Impossible d ajuster le schema metier:', error.message);
   }
 }
 
@@ -92,5 +121,5 @@ module.exports = {
   getPool,
   testConnection,
   ensureUserProfileColumn,
-  ensureAnnoncePhotoColumn,
+  ensureBusinessSchema,
 };
