@@ -66,6 +66,25 @@ async function getById(req, res, next) {
   }
 }
 
+async function getSuperadmin(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT u.*, r.nom_role
+       FROM utilisateurs u
+       JOIN roles r ON r.id_role = u.id_role
+       WHERE r.nom_role = 'super_admin' AND u.statut = 'active'
+       ORDER BY u.date_inscription ASC
+       LIMIT 1`
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Superadmin introuvable.' });
+    }
+    res.json(mapUserRow(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function list(req, res, next) {
   try {
     const { role, q } = req.query;
@@ -96,5 +115,5 @@ async function list(req, res, next) {
 }
 
 
-module.exports = { me, updateMe, getById, list };
+module.exports = { me, updateMe, getById, list, getSuperadmin };
 

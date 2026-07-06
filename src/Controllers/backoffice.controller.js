@@ -1,3 +1,4 @@
+const bcrypt = require('bcryptjs');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
 
@@ -128,6 +129,35 @@ async function queue(req, res, next) {
   }
 }
 
+const PUBLIC_TO_INTERNAL_ROLE = {
+  moderateur: 'moderator',
+  admin: 'admin',
+  super_admin: 'super_admin',
+  proprietaire: 'proprio',
+  colocataire: 'coloc',
+};
+
+function normalizeMemberStatut(statut) {
+  if (!statut) return 'active';
+  if (statut === 'actif') return 'active';
+  if (statut === 'suspendu') return 'suspended';
+  if (statut === 'inactif') return 'inactive';
+  return statut;
+}
+
+async function resolveRoleId(role) {
+  const internalRole = PUBLIC_TO_INTERNAL_ROLE[role] || role || 'coloc';
+  const rows = await query('SELECT id_role FROM roles WHERE nom_role = ? LIMIT 1', [internalRole]);
+  return rows[0]?.id_role || 1;
+}
+
+function splitFullName(fullName) {
+  const parts = String(fullName || '').trim().split(' ').filter(Boolean);
+  if (parts.length === 0) return { prenom: '', nom: '' };
+  if (parts.length === 1) return { prenom: parts[0], nom: '' };
+  return { prenom: parts[0], nom: parts.slice(1).join(' ') };
+}
+
 async function members(req, res, next) {
   try {
     const { role, q, statut } = req.query;
@@ -178,6 +208,111 @@ async function members(req, res, next) {
       annoncesCount: Number(row.annonces_count || 0),
       candidaturesCount: Number(row.candidatures_count || 0),
     })));
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createMember(req, res, next) {
+  try {
+    const { nom, email, telephone, mot_de_passe, role, statut } = req.body;
+    if (!nom || !email) {
+      return res.status(400).json({ message: 'Nom et email sont requis.' });
+    }
+
+    const existing = await query('SELECT id_utilisateur FROM utilisateurs WHERE email = ? LIMIT 1', [email]);
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'Email déjà utilisé.' });
+    }
+
+    const roleId = await resolveRoleId(role);
+    const { prenom, nom: nomValue } = splitFullName(nom);
+    const password = mot_de_passe && String(mot_de_passe).trim().length > 0 ? mot_de_passe : '123456';
+    const hash = await bcrypt.hash(password, 10);
+    const userId = await insertAndGetId(
+      'INSERT INTO utilisateurs (email, telephone, mot_de_passe, nom, prenom, statut, id_role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [email, telephone || null, hash, nomValue || nom, prenom, normalizeMemberStatut(statut), roleId]
+    );
+
+    const rows = await query(
+      `SELECT u.*, r.nom_role
+       FROM utilisateurs u
+       JOIN roles r ON r.id_role = u.id_role
+       WHERE u.id_utilisateur = ?
+       LIMIT 1`,
+      [userId]
+    );
+    const user = rows[0] ? mapUserRow(rows[0]) : null;
+    res.status(201).json(user ? { ...user, mot_de_passe: password } : null);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateMember(req, res, next) {
+  try {
+    const allowed = ['nom', 'email', 'telephone', 'statut', 'role'];
+    const sets = [];
+    const values = [];
+    const body = req.body;
+
+    if (body.nom) {
+      const { prenom, nom: nomValue } = splitFullName(body.nom);
+      sets.push('nom = ?', 'prenom = ?');
+      values.push(nomValue || body.nom, prenom);
+    }
+    if (body.email !== undefined) {
+      sets.push('email = ?');
+      values.push(body.email);
+    }
+    if (body.telephone !== undefined) {
+      sets.push('telephone = ?');
+      values.push(body.telephone || null);
+    }
+    if (body.statut !== undefined) {
+      sets.push('statut = ?');
+      values.push(normalizeMemberStatut(body.statut));
+    }
+    if (body.role !== undefined) {
+      const roleId = await resolveRoleId(body.role);
+      sets.push('id_role = ?');
+      values.push(roleId);
+    }
+    if (body.mot_de_passe !== undefined && body.mot_de_passe !== '') {
+      const passHash = await bcrypt.hash(body.mot_de_passe, 10);
+      sets.push('mot_de_passe = ?');
+      values.push(passHash);
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ message: 'Aucune modification fournie.' });
+    }
+
+    values.push(req.params.id);
+    await query(`UPDATE utilisateurs SET ${sets.join(', ')} WHERE id_utilisateur = ?`, values);
+
+    const rows = await query(
+      `SELECT u.*, r.nom_role
+       FROM utilisateurs u
+       JOIN roles r ON r.id_role = u.id_role
+       WHERE u.id_utilisateur = ?
+       LIMIT 1`,
+      [req.params.id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Membre introuvable.' });
+    }
+    res.json(mapUserRow(rows[0]));
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteMember(req, res, next) {
+  try {
+    await query('DELETE FROM utilisateurs WHERE id_utilisateur = ?', [req.params.id]);
+    await logAction(req, 'Suppression', 'utilisateur', req.params.id, null);
+    res.json({ message: 'Membre supprimé.' });
   } catch (err) {
     next(err);
   }
@@ -678,6 +813,67 @@ async function administration(req, res, next) {
   }
 }
 
+async function backofficePerformance(req, res, next) {
+  try {
+    const [summary, tauxValidation, contratsMois, chiffreAffairesMois, candidaturesMois] = await Promise.all([
+      query(`SELECT
+               (SELECT COUNT(*) FROM annonces WHERE statut='active') AS annonces_actives,
+               (SELECT COUNT(*) FROM utilisateurs WHERE statut='active') AS utilisateurs_actifs,
+               (SELECT COUNT(*) FROM messages WHERE DATE(date_envoi)=CURDATE()) AS messages_jour,
+               (SELECT COUNT(*) FROM signalements WHERE statut IN ('new','in_progress')) AS signalements_ouverts
+             `),
+      query(`SELECT ROUND(100 * SUM(CASE WHEN statut = 'active' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) AS taux_validation FROM annonces`),
+      query(`SELECT COUNT(*) AS contrats_mois FROM contrats WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())`),
+      query(`SELECT COALESCE(SUM(montant_recu), 0) AS chiffre_affaires_mois FROM paiements WHERE MONTH(date_paiement) = MONTH(CURDATE()) AND YEAR(date_paiement) = YEAR(CURDATE()) AND statut IN ('conforme','valide')`),
+      query(`SELECT COUNT(*) AS candidatures_mois FROM candidatures WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())`),
+    ])
+
+    res.json({
+      annonces_actives: Number(summary[0]?.annonces_actives || 0),
+      utilisateurs_actifs: Number(summary[0]?.utilisateurs_actifs || 0),
+      messages_jour: Number(summary[0]?.messages_jour || 0),
+      signalements_ouverts: Number(summary[0]?.signalements_ouverts || 0),
+      taux_validation: Number(tauxValidation[0]?.taux_validation || 0),
+      contrats_mois: Number(contratsMois[0]?.contrats_mois || 0),
+      chiffre_affaires_mois: Number(chiffreAffairesMois[0]?.chiffre_affaires_mois || 0),
+      candidatures_mois: Number(candidaturesMois[0]?.candidatures_mois || 0),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function backofficePaiements(req, res, next) {
+  try {
+    const rows = await query(`
+      SELECT p.*, u.nom, u.prenom, a.titre AS annonce_titre
+      FROM paiements p
+      JOIN utilisateurs u ON u.id_utilisateur = p.id_utilisateur
+      LEFT JOIN annonces a ON a.id_annonce = p.id_annonce
+      ORDER BY p.date_paiement DESC
+      LIMIT 300
+    `)
+    res.json(rows)
+  } catch (err) {
+    next(err)
+  }
+}
+
+async function updatePaiementStatus(req, res, next) {
+  try {
+    const { statut } = req.body;
+    const allowed = ['a-verifier', 'conforme', 'non-conforme', 'en-attente', 'valide', 'echoue'];
+    if (!allowed.includes(statut)) {
+      return res.status(400).json({ message: 'Statut invalide.' });
+    }
+    await query('UPDATE paiements SET statut = ? WHERE id_paiement = ?', [statut, req.params.id]);
+    await logAction(req, 'Correction', 'paiement', req.params.id, { statut });
+    res.json({ message: 'Paiement mis à jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function saveConfiguration(req, res, next) {
   try {
     await ensureBackofficeSchema();
@@ -734,6 +930,8 @@ module.exports = {
   createServiceCkoo,
   updateServiceCkoo,
   deleteServiceCkoo,
+  backofficePaiements,
+  updatePaiementStatus,
   contrats,
   contratDetails,
   saveContrat,
@@ -744,6 +942,10 @@ module.exports = {
   deletePartenaire,
   partenairesStats,
   administration,
+  backofficePerformance,
   saveConfiguration,
+  createMember,
+  updateMember,
+  deleteMember,
   saveObjectif,
 };

@@ -91,4 +91,32 @@ async function report(req, res, next) {
   }
 }
 
-module.exports = { listThreads, getThread, send, report };
+async function removeThread(req, res, next) {
+  try {
+    const otherId = req.params.userId;
+    await query(
+      `DELETE FROM messages WHERE (id_expediteur = ? AND id_destinataire = ?) OR (id_expediteur = ? AND id_destinataire = ?)`,
+      [req.user.id, otherId, otherId, req.user.id]
+    );
+    res.json({ message: 'Conversation supprimee.' });
+  } catch (err) {
+    next(err);
+  }
+}
+async function removeMessage(req, res, next) {
+  try {
+    // allow sender or recipient to delete their copy
+    const rows = await query('SELECT * FROM messages WHERE id_message = ? LIMIT 1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ message: 'Message introuvable.' });
+    const msg = rows[0];
+    if (msg.id_expediteur !== req.user.id && msg.id_destinataire !== req.user.id) {
+      return res.status(403).json({ message: 'Acces refuse.' });
+    }
+    await query('DELETE FROM messages WHERE id_message = ?', [req.params.id]);
+    res.json({ message: 'Message supprime.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listThreads, getThread, send, report, removeMessage, removeThread };
