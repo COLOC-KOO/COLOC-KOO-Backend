@@ -34,11 +34,17 @@ router.post('/contrats', controller.saveContrat);
 router.patch('/contrats/:id', controller.saveContrat);
 router.post('/contrats/:id/:action', controller.contratAction);
 router.get('/partenaires/stats', controller.partenairesStats);
+router.get('/paiements', controller.backofficePaiements);
 router.get('/administration', controller.administration);
+router.get('/performance', controller.backofficePerformance);
 router.post('/administration/configuration', controller.saveConfiguration);
 router.post('/administration/objectifs', controller.saveObjectif);
 router.patch('/administration/objectifs/:id', controller.saveObjectif);
+router.post('/membres', controller.createMember);
+router.patch('/membres/:id', controller.updateMember);
+router.delete('/membres/:id', controller.deleteMember);
 router.patch('/annonces/:id/status', controller.moderateAnnonce);
+router.patch('/paiements/:id/status', controller.updatePaiementStatus);
 router.patch('/members/:id/status', controller.moderateMember);
 
 module.exports = router;

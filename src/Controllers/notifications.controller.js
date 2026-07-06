@@ -27,4 +27,13 @@ async function markOneRead(req, res, next) {
   }
 }
 
-module.exports = { listMine, markAllRead, markOneRead };
+async function remove(req, res, next) {
+  try {
+    await query('DELETE FROM notifications WHERE id_notification = ? AND id_utilisateur = ?', [req.params.id, req.user.id]);
+    res.json({ message: 'Notification supprimee.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listMine, markAllRead, markOneRead, remove };
