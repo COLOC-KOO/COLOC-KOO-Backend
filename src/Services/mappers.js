@@ -84,7 +84,7 @@ function mapAnnonceRow(row) {
     } : null,
     services: splitPipe(row.amenities),
     regles: splitPipe(row.rules),
-    photos: splitPipe(row.photos),
+    photos: splitPipe(row.photos).length ? splitPipe(row.photos) : row.first_photo ? [row.first_photo] : [],
   };
 }
 

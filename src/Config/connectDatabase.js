@@ -61,6 +61,7 @@ async function ensureBusinessSchema() {
     const dbPool = await initPool();
     await dbPool.query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'");
     await dbPool.query("ALTER TABLE contrats MODIFY COLUMN statut ENUM('a-emettre','a-planifier','brouillon','emis','envoye','signe','annule') NOT NULL DEFAULT 'a-emettre'");
+    await dbPool.query("ALTER TABLE photos_annonces MODIFY COLUMN url LONGTEXT NOT NULL").catch(() => {});
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS journal_actions (
         id_action INT NOT NULL AUTO_INCREMENT,
