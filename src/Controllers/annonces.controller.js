@@ -54,6 +54,7 @@ async function list(req, res, next) {
     }
 
     const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    await query('SET SESSION group_concat_max_len = 1000000');
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
@@ -88,6 +89,7 @@ async function list(req, res, next) {
 
 async function getById(req, res, next) {
   try {
+    await query('SET SESSION group_concat_max_len = 1000000');
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
@@ -116,8 +118,23 @@ async function getById(req, res, next) {
     }
 
     const annonce = mapAnnonceRow(rows[0]);
+    annonce.photos = await getPhotoUrlsByAnnonce(req.params.id);
     const extra = await hydrateAnnonce(req.params.id);
     res.json({ ...annonce, ...extra });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function uploadPhotos(req, res, next) {
+  try {
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (files.length === 0) {
+      return res.status(400).json({ message: 'Aucune photo envoyee.' });
+    }
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const photos = files.map((file) => `${baseUrl}/uploads/${file.filename}`);
+    res.status(201).json({ photos });
   } catch (err) {
     next(err);
   }
@@ -150,6 +167,7 @@ async function create(req, res, next) {
       regles = [],
       photos = [],
     } = req.body;
+    const photoUrls = Array.isArray(photos) ? photos.filter((p) => typeof p === 'string') : [];
 
     if (!titre || !id_ville) {
       return res.status(400).json({ message: 'Titre et ville requis.' });
@@ -217,10 +235,10 @@ async function create(req, res, next) {
     for (const regle of regles) {
       await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [annonceId, regle]);
     }
-    for (let i = 0; i < photos.length; i += 1) {
+    for (let i = 0; i < photoUrls.length; i += 1) {
       await query('INSERT INTO photos_annonces (id_annonce, url, est_principale, ordre) VALUES (?, ?, ?, ?)', [
         annonceId,
-        photos[i],
+        photoUrls[i],
         i === 0 ? 1 : 0,
         i,
       ]);
@@ -303,12 +321,21 @@ async function remove(req, res, next) {
   }
 }
 
+async function getPhotoUrlsByAnnonce(id) {
+  const rows = await query(
+    `SELECT url FROM photos_annonces WHERE id_annonce = ? ORDER BY ordre, id_photo`,
+    [id]
+  );
+  return rows.map((row) => row.url);
+}
+
 async function getByIdInternal(id) {
+  await query('SET SESSION group_concat_max_len = 1000000');
   const rows = await query(
     `
     SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
            v.nom_ville, r.nom_region,
-           ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+           MIN(ch.surface) AS chambre_surface, MIN(ch.prix_loyer) AS prix_loyer, MIN(ch.date_disponibilite) AS date_disponibilite,
            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
@@ -329,7 +356,9 @@ async function getByIdInternal(id) {
   if (rows.length === 0) {
     return null;
   }
-  return mapAnnonceRow(rows[0]);
+  const annonce = mapAnnonceRow(rows[0]);
+  annonce.photos = await getPhotoUrlsByAnnonce(id);
+  return annonce;
 }
 
-module.exports = { list, getById, create, update, updateStatus, remove };
+module.exports = { list, getById, uploadPhotos, create, update, updateStatus, remove };

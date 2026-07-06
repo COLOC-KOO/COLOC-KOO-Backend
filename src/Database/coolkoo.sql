@@ -383,7 +383,7 @@ CREATE TABLE `parties_contrats` (
 CREATE TABLE `photos_annonces` (
   `id_photo` int(11) NOT NULL,
   `id_annonce` int(11) NOT NULL,
-  `url` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `url` longtext COLLATE utf8mb4_unicode_ci NOT NULL,
   `est_principale` tinyint(1) NOT NULL DEFAULT '0',
   `ordre` int(11) NOT NULL DEFAULT '0',
   `date_creation` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
