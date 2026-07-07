@@ -3,7 +3,7 @@ const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 
 async function list(req, res, next) {
   try {
-    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine } = req.query;
+    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service } = req.query;
     const clauses = [];
     const values = [];
     const isMine = mine === '1' || mine === 'true' || mine === true;
@@ -51,6 +51,21 @@ async function list(req, res, next) {
     if (q) {
       clauses.push('(a.titre LIKE ? OR a.description LIKE ? OR v.nom_ville LIKE ? OR a.quartier LIKE ?)');
       values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+    }
+    if (service) {
+      const serviceId = Number(service);
+      if (!Number.isNaN(serviceId)) {
+        clauses.push(
+          `EXISTS (
+            SELECT 1
+            FROM demandes_ckoo d
+            JOIN lignes_demandes_ckoo ld ON ld.id_demande = d.id_demande
+            WHERE d.id_annonce = a.id_annonce
+              AND ld.id_service = ?
+          )`
+        );
+        values.push(serviceId);
+      }
     }
 
     const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
