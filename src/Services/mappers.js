@@ -82,6 +82,7 @@ function mapAnnonceRow(row) {
       prix_loyer: row.prix_loyer,
       date_disponibilite: row.date_disponibilite,
     } : null,
+    id_utilisateur: row.id_utilisateur,
     services: splitPipe(row.amenities),
     regles: splitPipe(row.rules),
     photos: splitPipe(row.photos).length ? splitPipe(row.photos) : row.first_photo ? [row.first_photo] : [],
