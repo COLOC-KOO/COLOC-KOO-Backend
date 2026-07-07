@@ -87,6 +87,46 @@ async function list(req, res, next) {
   }
 }
 
+// async function getById(req, res, next) {
+//   try {
+//     await query('SET SESSION group_concat_max_len = 1000000');
+//     const rows = await query(
+//       `
+//       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+//              v.nom_ville, r.nom_region,
+//              ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+//              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+//              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+//              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+//       FROM annonces a
+//       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+//       JOIN villes v ON v.id_ville = a.id_ville
+//       JOIN regions r ON r.id_region = v.id_region
+//       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+//       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+//       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+//       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+//       WHERE a.id_annonce = ?
+//       GROUP BY a.id_annonce
+//       LIMIT 1
+//       `,
+//       [req.params.id]
+//     );
+
+//     if (rows.length === 0) {
+//       return res.status(404).json({ message: 'Annonce introuvable.' });
+//     }
+
+//     const annonce = mapAnnonceRow(rows[0]);
+//     annonce.photos = await getPhotoUrlsByAnnonce(req.params.id);
+//     const extra = await hydrateAnnonce(req.params.id);
+//     res.json({ ...annonce, ...extra });
+//   } catch (err) {
+//     next(err);
+//   }
+// }
+
+// ✅ CORRECTION : Utiliser MIN() pour les colonnes non agrégées
 async function getById(req, res, next) {
   try {
     await query('SET SESSION group_concat_max_len = 1000000');
@@ -94,7 +134,9 @@ async function getById(req, res, next) {
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
              v.nom_ville, r.nom_region,
-             ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
+             MIN(ch.surface) AS chambre_surface, 
+             MIN(ch.prix_loyer) AS prix_loyer, 
+             MIN(ch.date_disponibilite) AS date_disponibilite,
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
@@ -329,13 +371,48 @@ async function getPhotoUrlsByAnnonce(id) {
   return rows.map((row) => row.url);
 }
 
+// async function getByIdInternal(id) {
+//   await query('SET SESSION group_concat_max_len = 1000000');
+//   const rows = await query(
+//     `
+//     SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+//            v.nom_ville, r.nom_region,
+//            MIN(ch.surface) AS chambre_surface, MIN(ch.prix_loyer) AS prix_loyer, MIN(ch.date_disponibilite) AS date_disponibilite,
+//            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+//            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+//            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+//     FROM annonces a
+//     JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+//     JOIN villes v ON v.id_ville = a.id_ville
+//     JOIN regions r ON r.id_region = v.id_region
+//     LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+//     LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+//     LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+//     LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+//     WHERE a.id_annonce = ?
+//     GROUP BY a.id_annonce
+//     LIMIT 1
+//     `,
+//     [id]
+//   );
+//   if (rows.length === 0) {
+//     return null;
+//   }
+//   const annonce = mapAnnonceRow(rows[0]);
+//   annonce.photos = await getPhotoUrlsByAnnonce(id);
+//   return annonce;
+// }
+
+// ✅ CORRECTION : Utiliser MIN() pour les colonnes non agrégées
 async function getByIdInternal(id) {
   await query('SET SESSION group_concat_max_len = 1000000');
   const rows = await query(
     `
     SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
            v.nom_ville, r.nom_region,
-           MIN(ch.surface) AS chambre_surface, MIN(ch.prix_loyer) AS prix_loyer, MIN(ch.date_disponibilite) AS date_disponibilite,
+           MIN(ch.surface) AS chambre_surface, 
+           MIN(ch.prix_loyer) AS prix_loyer, 
+           MIN(ch.date_disponibilite) AS date_disponibilite,
            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
