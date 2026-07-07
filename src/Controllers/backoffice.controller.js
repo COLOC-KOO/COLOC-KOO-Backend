@@ -370,6 +370,7 @@ async function signalements(req, res, next) {
   try {
     const rows = await query(
       `SELECT s.*,
+              COALESCE(s.statut, 'new') AS statut,
               us.nom AS signaleur_nom, us.prenom AS signaleur_prenom, us.email AS signaleur_email,
               uc.nom AS cible_nom, uc.prenom AS cible_prenom, uc.email AS cible_email,
               a.titre AS annonce_titre, m.contenu AS message_contenu
@@ -389,7 +390,15 @@ async function signalements(req, res, next) {
 
 async function signalementConversation(req, res, next) {
   try {
-    const reportRows = await query('SELECT * FROM signalements WHERE id_signalement = ? LIMIT 1', [req.params.id]);
+    const reportRows = await query(
+      `SELECT s.*, us.nom AS signaleur_nom, us.prenom AS signaleur_prenom,
+              uc.nom AS cible_nom, uc.prenom AS cible_prenom
+       FROM signalements s
+       LEFT JOIN utilisateurs us ON us.id_utilisateur = s.id_utilisateur_signalant
+       LEFT JOIN utilisateurs uc ON uc.id_utilisateur = s.id_utilisateur_cible
+       WHERE s.id_signalement = ? LIMIT 1`,
+      [req.params.id]
+    );
     if (reportRows.length === 0) return res.status(404).json({ message: 'Signalement introuvable.' });
     const report = reportRows[0];
     let a = report.id_utilisateur_signalant;
@@ -412,7 +421,18 @@ async function signalementConversation(req, res, next) {
        ORDER BY m.date_envoi ASC`,
       [a, b, b, a, report.id_annonce, report.id_annonce]
     ) : [];
-    res.json({ signalement: report, membreA: a, membreB: b, messages });
+    res.json({
+      signalement: {
+        ...report,
+        signaleur_nom: report.signaleur_nom,
+        signaleur_prenom: report.signaleur_prenom,
+        cible_nom: report.cible_nom,
+        cible_prenom: report.cible_prenom,
+      },
+      membreA: a,
+      membreB: b,
+      messages,
+    });
   } catch (err) {
     next(err);
   }
@@ -421,11 +441,20 @@ async function signalementConversation(req, res, next) {
 async function updateSignalement(req, res, next) {
   try {
     const { statut = 'resolved', action, raison } = req.body;
+    const normalizedStatus = ['new', 'in_progress', 'resolved', 'dismissed'].includes(statut)
+      ? statut
+      : action === 'dismiss'
+        ? 'dismissed'
+        : action === 'warn'
+          ? 'in_progress'
+          : action === 'resolve'
+            ? 'resolved'
+            : 'resolved';
     await query(
       'UPDATE signalements SET statut = ?, date_resolution = IF(? IN ("resolved","dismissed"), NOW(), date_resolution) WHERE id_signalement = ?',
-      [statut, statut, req.params.id]
+      [normalizedStatus, normalizedStatus, req.params.id]
     );
-    await logAction(req, action === 'dismiss' ? 'Classement sans suite' : 'Correction', 'signalement', req.params.id, { statut, raison });
+    await logAction(req, action === 'dismiss' ? 'Classement sans suite' : action === 'warn' ? 'Avertissement' : action === 'resolve' ? 'Resolution' : 'Correction', 'signalement', req.params.id, { statut: normalizedStatus, raison });
     res.json({ message: 'Signalement mis a jour.' });
   } catch (err) {
     next(err);
