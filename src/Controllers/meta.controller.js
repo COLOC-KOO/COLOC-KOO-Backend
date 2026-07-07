@@ -41,4 +41,18 @@ async function listVilles(req, res, next) {
   }
 }
 
-module.exports = { listRoles, listLangues, listRegions, listVilles };
+async function listServices(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT id_service, cle_service, nom, description, prix, unite, est_actif
+       FROM services_ckoo
+       WHERE est_actif = 1
+       ORDER BY nom ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listRoles, listLangues, listRegions, listVilles, listServices };
