@@ -326,12 +326,77 @@ async function update(req, res, next) {
           : req.body[field]);
       }
     }
-    if (sets.length === 0) {
+    if (sets.length === 0 && req.body.chambres === undefined && req.body.services === undefined && req.body.regles === undefined && req.body.photos === undefined) {
       return res.status(400).json({ message: 'Aucune modification fournie.' });
     }
 
-    values.push(req.params.id);
-    await query(`UPDATE annonces SET ${sets.join(', ')} WHERE id_annonce = ?`, values);
+    if (sets.length > 0) {
+      values.push(req.params.id);
+      await query(`UPDATE annonces SET ${sets.join(', ')} WHERE id_annonce = ?`, values);
+    }
+
+    if (req.body.chambres !== undefined && req.body.chambres !== null) {
+      const chambre = req.body.chambres;
+      const existing = await query('SELECT id_chambre FROM chambres WHERE id_annonce = ? LIMIT 1', [req.params.id]);
+      if (existing.length > 0) {
+        await query(
+          `UPDATE chambres SET surface = ?, est_meuble = ?, prix_meubles = ?, description_meubles = ?, prix_loyer = ?, prix_charges = ?, type_garantie = ?, montant_garantie = ?, date_disponibilite = ? WHERE id_annonce = ?`,
+          [
+            chambre.surface ?? null,
+            chambre.est_meuble ?? null,
+            chambre.prix_meubles ?? null,
+            chambre.description_meubles ?? null,
+            chambre.prix_loyer ?? null,
+            chambre.prix_charges ?? null,
+            chambre.type_garantie ?? '1mois',
+            chambre.montant_garantie ?? null,
+            chambre.date_disponibilite ?? null,
+            req.params.id,
+          ]
+        );
+      } else {
+        await query(
+          `INSERT INTO chambres (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            req.params.id,
+            chambre.surface ?? null,
+            chambre.est_meuble ?? null,
+            chambre.prix_meubles ?? null,
+            chambre.description_meubles ?? null,
+            chambre.prix_loyer ?? null,
+            chambre.prix_charges ?? null,
+            chambre.type_garantie ?? '1mois',
+            chambre.montant_garantie ?? null,
+            chambre.date_disponibilite ?? null,
+          ]
+        );
+      }
+    }
+
+    if (Array.isArray(req.body.services)) {
+      await query('DELETE FROM equipements_annonces WHERE id_annonce = ?', [req.params.id]);
+      for (const amenity of req.body.services) {
+        await query('INSERT INTO equipements_annonces (id_annonce, amenity) VALUES (?, ?)', [req.params.id, amenity]);
+      }
+    }
+
+    if (Array.isArray(req.body.regles)) {
+      await query('DELETE FROM regles_annonces WHERE id_annonce = ?', [req.params.id]);
+      for (const regle of req.body.regles) {
+        await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [req.params.id, regle]);
+      }
+    }
+
+    if (Array.isArray(req.body.photos)) {
+      await query('DELETE FROM photos_annonces WHERE id_annonce = ?', [req.params.id]);
+      for (let i = 0; i < req.body.photos.length; i += 1) {
+        const url = req.body.photos[i];
+        if (typeof url === 'string' && url.trim()) {
+          await query('INSERT INTO photos_annonces (id_annonce, url, est_principale, ordre) VALUES (?, ?, ?, ?)', [req.params.id, url, i === 0 ? 1 : 0, i]);
+        }
+      }
+    }
+
     const updated = await getByIdInternal(req.params.id);
     res.json(updated);
   } catch (err) {
