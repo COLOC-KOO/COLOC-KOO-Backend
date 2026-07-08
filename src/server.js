@@ -2,7 +2,7 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const { createApp } = require('./app');
-const { testConnection, ensureUserProfileColumn, ensureBusinessSchema } = require('./Config/connectDatabase');
+const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
 
 const PORT = process.env.PORT || 5000;
 const app = createApp();
@@ -11,6 +11,7 @@ async function start() {
   await testConnection();
   await ensureUserProfileColumn();
   await ensureBusinessSchema();
+  await ensurePartenaireRequestSchema();
 
   const server = app.listen(PORT, () => {
     console.log(`Serveur demarre sur le port ${PORT}`);
