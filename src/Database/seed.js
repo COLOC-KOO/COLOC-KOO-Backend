@@ -50,8 +50,8 @@ async function main() {
     `INSERT INTO utilisateurs
      (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, est_verifie, statut, id_role)
      VALUES
-     ('rakoto.a@email.mg', '+261340000001', ?, 'Rakoto', 'Andriamahefa', 26, 'Developpeur web', 'Developpeur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'coloc' LIMIT 1)),
-     ('rabe.m@email.mg', '+261340000002', ?, 'Rabe', 'Miandrisoa', 32, 'Proprietaire verifie', 'Proprietaire', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'coloc' LIMIT 1)),
+     ('coloc@email.mg', '+261340000001', ?, 'Rakoto', 'Andriamahefa', 26, 'Developpeur web', 'Developpeur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'coloc' LIMIT 1)),
+     ('superadmin@email.mg', '+261340000002', ?, 'Rabe', 'Miandrisoa', 32, 'Proprietaire verifie', 'super_admin', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'super_admin' LIMIT 1)),
      ('moderateur@colockoo.mg', '+261340000003', ?, 'Moderateur', 'Equipe', 30, 'Moderation', 'Moderateur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'moderator' LIMIT 1)),
      ('admin@colockoo.mg', '+261340000004', ?, 'Super', 'Admin', 34, 'Administration', 'Administrateur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'admin' LIMIT 1))
      ON DUPLICATE KEY UPDATE nom = VALUES(nom)`,
@@ -62,8 +62,8 @@ async function main() {
   const [maha] = await query("SELECT id_ville FROM villes WHERE nom_ville = 'Mahajanga' LIMIT 1");
   const [toam] = await query("SELECT id_ville FROM villes WHERE nom_ville = 'Toamasina' LIMIT 1");
 
-  const [proprio] = await query("SELECT id_utilisateur FROM utilisateurs WHERE email = 'rabe.m@email.mg' LIMIT 1");
-  const [coloc] = await query("SELECT id_utilisateur FROM utilisateurs WHERE email = 'rakoto.a@email.mg' LIMIT 1");
+  const [proprio] = await query("SELECT id_utilisateur FROM utilisateurs WHERE email = 'superadmin@email.mg' LIMIT 1");
+  const [coloc] = await query("SELECT id_utilisateur FROM utilisateurs WHERE email = 'coloc@email.mg' LIMIT 1");
 
   await query(
     `INSERT INTO annonces
