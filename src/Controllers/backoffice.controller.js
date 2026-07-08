@@ -667,6 +667,102 @@ async function partenaireRequests(req, res, next) {
   }
 }
 
+function parseMaybeJson(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return String(value)
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+async function statistiquesColocation(req, res, next) {
+  try {
+    const rows = await query(`
+      SELECT a.id_annonce,
+             a.date_creation,
+             a.quartier,
+             a.type_propriete,
+             a.type_annonce,
+             a.total_colocataires,
+             a.surface_totale,
+             a.internet,
+             a.parking_voitures,
+             a.parking_motos,
+             a.parking_couvert,
+             a.services_communs,
+             ch.surface AS chambre_surface,
+             ch.est_meuble,
+             ch.prix_loyer,
+             ch.prix_charges,
+             ch.date_disponibilite,
+             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS commodites,
+             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS regles
+      FROM annonces a
+      LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
+      LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
+      GROUP BY a.id_annonce
+      ORDER BY a.date_creation DESC
+    `);
+
+    const items = rows.map((row) => {
+      const commodites = String(row.commodites || '')
+        .split('||')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const regles = String(row.regles || '')
+        .split('||')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const servicesCommuns = parseMaybeJson(row.services_communs);
+      const loyer = Number(row.prix_loyer || 0);
+      const charges = Number(row.prix_charges || 0);
+      const type = String(row.type_propriete || 'autre').toLowerCase();
+      const typeLabel = type === 'maison' ? 'Maison' : type === 'appartement' ? 'Appartement' : 'Autre';
+      const annonceLabel = String(row.type_annonce || 'existante').toLowerCase() === 'creation' ? 'Création' : 'Colocation existante';
+      const rulesText = [...regles, ...servicesCommuns].filter(Boolean);
+
+      return {
+        id: String(row.id_annonce),
+        date: row.date_creation ? String(row.date_creation).slice(0, 10) : '',
+        quartier: row.quartier || 'Non renseigné',
+        type: typeLabel,
+        annonce: annonceLabel,
+        nbColocs: Number(row.total_colocataires || 0),
+        surface: Number(row.surface_totale || 0),
+        surfChambre: Number(row.chambre_surface || 0),
+        loyer: loyer || 0,
+        charges: charges || 0,
+        caution: loyer || 0,
+        meuble: row.est_meuble || 'Non',
+        internet: row.internet || 'Aucune',
+        parkingVoit: Number(row.parking_voitures || 0),
+        parking2r: Number(row.parking_motos || 0),
+        commod: commodites,
+        svck: servicesCommuns.length ? servicesCommuns : rulesText.filter((value) => /service|gardien|ménage|jardinier|intendance|eau|parking/i.test(String(value))),
+        filles: rulesText.some((value) => /fille|filles|girls/i.test(String(value))),
+        garcons: rulesText.some((value) => /garcon|garcons|boys/i.test(String(value))),
+        animaux: rulesText.some((value) => /animal|animaux|chien|chat|chien|chat/i.test(String(value))),
+        fumeurs: rulesText.some((value) => /fumeur|fume|non-fumeur/i.test(String(value))),
+      };
+    });
+
+    res.json({ items, generatedAt: new Date().toISOString(), total: items.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function deletePartenaireRequest(req, res, next) {
   try {
     await query('DELETE FROM demandes_partenaires WHERE id_demande = ?', [req.params.id]);
@@ -1002,6 +1098,7 @@ module.exports = {
   contratAction,
   partenaireRequests,
   deletePartenaireRequest,
+  statistiquesColocation,
   partenaires,
   createPartenaire,
   updatePartenaire,

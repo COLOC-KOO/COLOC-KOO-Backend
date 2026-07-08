@@ -28,6 +28,7 @@ router.delete('/services-ckoo/:id', controller.deleteServiceCkoo);
 router.get('/partenaires', controller.partenaires);
 router.get('/partenaires/requests', controller.partenaireRequests);
 router.delete('/partenaires/requests/:id', controller.deletePartenaireRequest);
+router.get('/statistiques-colocation', controller.statistiquesColocation);
 router.post('/partenaires', controller.createPartenaire);
 router.patch('/partenaires/:id', controller.updatePartenaire);
 router.delete('/partenaires/:id', controller.deletePartenaire);
