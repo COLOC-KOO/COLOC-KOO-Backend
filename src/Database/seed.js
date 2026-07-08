@@ -71,7 +71,7 @@ async function main() {
      VALUES
      (?, 'CK-100001', 'Maison avec jardin - Ankadifotsy', 'Maison lumineuse avec jardin et parking', 'active', 'proprio', 'complete', 'creation', 'maison', 4, 110, 'Ankadifotsy', ?, 'Fibre', 1, 1, 0, 1),
      (?, 'CK-100002', 'Appartement moderne - Analakely', 'Appartement centre ville', 'active', 'membre', 'complete', 'existante', 'appartement', 3, 75, 'Analakely', ?, 'ADSL', 0, 1, 0, 0),
-     (?, 'CK-100003', 'Villa a constituer - Iavoloha', 'Villa securisee avec piscine', 'pending', 'proprio', 'complete', 'creation', 'villa', 4, 160, 'Iavoloha', ?, 'Fibre', 2, 2, 1, 0)
+     (?, 'CK-100003', 'Villa a constituer - Iavoloha', 'Villa securisee avec piscine', 'pending', 'proprio', 'complete', 'creation', 'appartement', 4, 160, 'Iavoloha', ?, 'Fibre', 2, 2, 1, 0)
      ON DUPLICATE KEY UPDATE titre = VALUES(titre)`,
     [proprio.id_utilisateur, tana.id_ville, coloc.id_utilisateur, tana.id_ville, proprio.id_utilisateur, tana.id_ville]
   );
