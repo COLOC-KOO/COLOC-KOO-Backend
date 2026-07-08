@@ -782,6 +782,19 @@ async function partenaires(req, res, next) {
   }
 }
 
+async function uploadPartenaireLogo(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Aucun fichier fourni.' });
+    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    res.status(201).json({
+      url: `${baseUrl}/uploads/${req.file.filename}`,
+      filename: req.file.filename,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function createPartenaire(req, res, next) {
   try {
     const { nom, secteur, niveau, remise, engagement, logo, actif = 1 } = req.body;
@@ -1099,6 +1112,7 @@ module.exports = {
   partenaireRequests,
   deletePartenaireRequest,
   statistiquesColocation,
+  uploadPartenaireLogo,
   partenaires,
   createPartenaire,
   updatePartenaire,
