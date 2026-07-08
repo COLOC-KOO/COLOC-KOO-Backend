@@ -1,6 +1,23 @@
 const router = require('express').Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const controller = require('../Controllers/backoffice.controller');
 const { requireAuth, requireRole } = require('../Middleware/auth.middleware');
+
+const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
+fs.mkdirSync(uploadsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: uploadsDir,
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const name = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, name);
+  },
+});
+
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 router.use(requireAuth);
 router.use(requireRole('admin', 'super_admin', 'moderator'));
@@ -29,6 +46,7 @@ router.get('/partenaires', controller.partenaires);
 router.get('/partenaires/requests', controller.partenaireRequests);
 router.delete('/partenaires/requests/:id', controller.deletePartenaireRequest);
 router.get('/statistiques-colocation', controller.statistiquesColocation);
+router.post('/partenaires/upload', upload.single('logo'), controller.uploadPartenaireLogo);
 router.post('/partenaires', controller.createPartenaire);
 router.patch('/partenaires/:id', controller.updatePartenaire);
 router.delete('/partenaires/:id', controller.deletePartenaire);
