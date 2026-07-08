@@ -56,6 +56,30 @@ async function ensureUserProfileColumn() {
   }
 }
 
+async function ensurePartenaireRequestSchema() {
+  try {
+    const dbPool = await initPool();
+    const columnsToAdd = [
+      { name: 'nom_contact', definition: "VARCHAR(255) NULL" },
+      { name: 'telephone', definition: "VARCHAR(40) NULL" },
+      { name: 'telephone_code', definition: "VARCHAR(8) NULL" },
+      { name: 'souhaite_rappel', definition: "TINYINT(1) NOT NULL DEFAULT 0" },
+      { name: 'date_rappel', definition: "DATE NULL" },
+      { name: 'creneau_rappel', definition: "VARCHAR(40) NULL" },
+      { name: 'souhaite_plaquette', definition: "TINYINT(1) NOT NULL DEFAULT 0" },
+    ];
+
+    for (const column of columnsToAdd) {
+      const [existing] = await dbPool.query(`SHOW COLUMNS FROM demandes_partenaires LIKE ?`, [column.name]);
+      if (existing.length === 0) {
+        await dbPool.query(`ALTER TABLE demandes_partenaires ADD COLUMN \`${column.name}\` ${column.definition}`);
+      }
+    }
+  } catch (error) {
+    console.warn('Impossible d’ajuster le schema des demandes partenaires:', error.message);
+  }
+}
+
 async function ensureBusinessSchema() {
   try {
     const dbPool = await initPool();
@@ -96,6 +120,7 @@ async function ensureBusinessSchema() {
         PRIMARY KEY (cle)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await ensurePartenaireRequestSchema();
   } catch (error) {
     console.warn('Impossible d ajuster le schema metier:', error.message);
   }
@@ -123,4 +148,5 @@ module.exports = {
   testConnection,
   ensureUserProfileColumn,
   ensureBusinessSchema,
+  ensurePartenaireRequestSchema,
 };
