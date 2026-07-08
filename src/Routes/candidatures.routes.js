@@ -8,4 +8,8 @@ router.patch('/:id', requireAuth, controller.updateMine);
 router.get('/admin/all', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.listAll);
 router.patch('/:id/status', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.updateStatus);
 
+//NOUVELLES ROUTES
+router.get('/candidatures/annonce/:id', controller.listByAnnonce);
+router.get('/candidatures/verifier', controller.checkUserApplied);
+
 module.exports = router;
