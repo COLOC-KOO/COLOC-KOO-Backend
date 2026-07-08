@@ -536,6 +536,15 @@ async function contactMessages(req, res, next) {
   }
 }
 
+async function deleteContactMessage(req, res, next) {
+  try {
+    await query('DELETE FROM messages_contact WHERE id_message = ?', [req.params.id]);
+    res.json({ message: 'Message de contact supprime.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function replyContactMessage(req, res, next) {
   try {
     const { contenu, statut = 'read' } = req.body;
@@ -638,6 +647,31 @@ async function deleteServiceCkoo(req, res, next) {
     await query('UPDATE services_ckoo SET est_actif = 0 WHERE id_service = ?', [req.params.id]);
     await logAction(req, 'Correction', 'service_ckoo', req.params.id, { operation: 'desactivation' });
     res.json({ message: 'Service desactive.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function partenaireRequests(req, res, next) {
+  try {
+    const rows = await query(`
+      SELECT id_demande, nom_entreprise, nom_contact, email, telephone, telephone_code, secteur, niveau_souhaite, message,
+             statut, date_creation, souhaite_rappel, date_rappel, creneau_rappel, souhaite_plaquette
+      FROM demandes_partenaires
+      ORDER BY date_creation DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deletePartenaireRequest(req, res, next) {
+  try {
+    await query('DELETE FROM demandes_partenaires WHERE id_demande = ?', [req.params.id]);
+    await logAction(req, 'Correction', 'demande_partenaire', req.params.id, { operation: 'suppression' });
+    res.json({ message: 'Demande de partenariat supprimee.' });
   } catch (err) {
     next(err);
   }
@@ -952,6 +986,7 @@ module.exports = {
   conversations,
   conversationMessages,
   contactMessages,
+  deleteContactMessage,
   replyContactMessage,
   journal,
   suiviMissions,
@@ -965,6 +1000,8 @@ module.exports = {
   contratDetails,
   saveContrat,
   contratAction,
+  partenaireRequests,
+  deletePartenaireRequest,
   partenaires,
   createPartenaire,
   updatePartenaire,
