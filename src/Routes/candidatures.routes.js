@@ -5,6 +5,7 @@ const { requireAuth, requireRole, optionalAuth } = require('../Middleware/auth.m
 router.get('/', requireAuth, controller.listMine);
 router.post('/', requireAuth, controller.create);
 router.patch('/:id', requireAuth, controller.updateMine);
+router.delete('/:id', requireAuth, controller.remove);
 router.post('/:id/decision', requireAuth, controller.decide);
 router.post('/annonce/:id/launch', requireAuth, controller.launchColocation);
 router.get('/admin/all', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.listAll);
