@@ -48,6 +48,7 @@ const fs = require('fs');
 const corsMiddleware = require('./Middleware/cors.middleware');
 const routes = require('./Routes');
 const { notFound, errorHandler } = require('./Middleware/error.middleware');
+const candidatureRoutes = require('./Routes/candidatures.routes');
 
 function createApp() {
   const app = express();
@@ -103,6 +104,8 @@ function createApp() {
       res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
   }));
+
+  app.use('/api/candidatures', candidatureRoutes);
   
   app.use(morgan('dev'));
 

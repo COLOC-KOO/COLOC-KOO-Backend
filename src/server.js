@@ -4,7 +4,7 @@ dotenv.config();
 const { createApp } = require('./app');
 const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 4000;
 const app = createApp();
 
 async function start() {
