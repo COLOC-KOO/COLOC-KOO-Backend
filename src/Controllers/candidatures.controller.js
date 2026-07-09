@@ -224,6 +224,45 @@ async function updateStatus(req, res, next) {
   }
 }
 
+async function remove(req, res, next) {
+  try {
+    const candidatureId = Number(req.params.id);
+    if (!Number.isInteger(candidatureId)) {
+      return res.status(400).json({ message: 'Candidature invalide.' });
+    }
+
+    const candidatureRows = await query(
+      `SELECT c.id_candidature, c.id_annonce, c.id_utilisateur, a.id_utilisateur AS owner_id
+       FROM candidatures c
+       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
+       WHERE c.id_candidature = ? LIMIT 1`,
+      [candidatureId]
+    );
+
+    if (!candidatureRows.length) {
+      return res.status(404).json({ message: 'Candidature introuvable.' });
+    }
+
+    const candidature = candidatureRows[0];
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const canDelete = currentUserId === Number(candidature.owner_id)
+      || currentUserId === Number(candidature.id_utilisateur)
+      || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    if (!canDelete) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas supprimer cette candidature.' });
+    }
+
+    await query('DELETE FROM candidature_membres WHERE id_candidature = ?', [candidatureId]);
+    await query('DELETE FROM candidatures WHERE id_candidature = ?', [candidatureId]);
+
+    res.json({ message: 'Candidature supprimée.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function decide(req, res, next) {
   try {
     const candidatureId = Number(req.params.id);
@@ -248,24 +287,32 @@ async function decide(req, res, next) {
     }
 
     const candidature = candidatureRows[0];
-
-    if (!canManageCandidature(req.user, candidature.owner_id)) {
-      return res.status(403).json({ message: 'Vous ne pouvez pas gérer cette candidature.' });
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    if (!Number.isInteger(currentUserId)) {
+      return res.status(401).json({ message: 'Utilisateur non authentifie.' });
     }
 
+    const isOwner = currentUserId === Number(candidature.owner_id);
+    const isCandidate = currentUserId === Number(candidature.id_utilisateur);
+
     if (action === 'discuss') {
+      const destinataireId = isCandidate ? Number(candidature.owner_id) : Number(candidature.id_utilisateur);
       const contenu = message || `Bonjour, je souhaite discuter de votre candidature pour l'annonce ${candidature.titre || candidature.id_annonce}.`;
       const conversationId = await insertAndGetId(
         `INSERT INTO messages (id_expediteur, id_destinataire, id_annonce, sujet, contenu)
          VALUES (?, ?, ?, ?, ?)`,
-        [req.user.id, candidature.id_utilisateur, candidature.id_annonce, 'Discussion candidature', contenu]
+        [currentUserId, destinataireId, candidature.id_annonce, 'Discussion candidature', contenu]
       );
       await query(
         `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
          VALUES (?, 'message', ?, ?, ?)`,
-        [candidature.id_utilisateur, 'Nouvelle discussion', contenu.slice(0, 255), `/messages/${req.user.id}`]
+        [destinataireId, 'Nouvelle discussion', contenu.slice(0, 255), `/messages/${currentUserId}`]
       ).catch(() => {});
       return res.json({ message: 'Discussion lancée.', conversationId });
+    }
+
+    if (!canManageCandidature(req.user, candidature.owner_id)) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas gérer cette candidature.' });
     }
 
     const equipeId = await ensureEquipeForAnnonce(candidature.id_annonce, candidature.titre);
@@ -311,24 +358,58 @@ async function launchColocation(req, res, next) {
     }
 
     const annonce = rows[0];
-    if (req.user.id !== Number(annonce.id_utilisateur)) {
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const canLaunch = currentUserId === Number(annonce.id_utilisateur)
+      || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    if (!canLaunch) {
       return res.status(403).json({ message: 'Vous ne pouvez pas lancer cette colocation.' });
     }
 
     const accepted = await query(
-      `SELECT COUNT(*) as count
+      `SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, u.nom, u.prenom, u.email
        FROM candidatures c
-       WHERE c.id_annonce = ? AND c.statut = ?`,
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+       WHERE c.id_annonce = ? AND c.statut = ?
+       ORDER BY c.date_creation ASC`,
       [annonceId, normalizeStatus('acceptee')]
     );
 
-    if (Number(accepted[0].count) < 3) {
+    if (accepted.length < 3) {
       return res.status(400).json({ message: 'Au moins 3 candidats acceptés sont requis.' });
     }
 
     const equipeId = await ensureEquipeForAnnonce(annonceId, annonce.titre);
     await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['complete', equipeId]);
-    return res.json({ message: 'Colocation lancée.', equipeId });
+
+    for (const candidature of accepted) {
+      const existingMemberRows = await query(
+        'SELECT id FROM candidature_membres WHERE id_candidature = ? LIMIT 1',
+        [candidature.id_candidature]
+      );
+      const memberName = [candidature.prenom, candidature.nom].filter(Boolean).join(' ').trim() || `Membre ${candidature.id_utilisateur}`;
+      const initiales = [candidature.prenom, candidature.nom].filter(Boolean).map((value) => String(value).charAt(0)).join('').slice(0, 2).toUpperCase() || 'MB';
+
+      if (existingMemberRows.length) {
+        await query(
+          `UPDATE candidature_membres
+           SET nom = ?, initiales = ?, statut = ?, profession = ?, age = ?
+           WHERE id_candidature = ?`,
+          [memberName, initiales, 'active', null, null, candidature.id_candidature]
+        );
+      } else {
+        await query(
+          `INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [candidature.id_candidature, memberName, initiales, 'active', null, null]
+        );
+      }
+    }
+
+    await query('DELETE FROM membres_equipes WHERE id_equipe = ?', [equipeId]);
+
+    return res.json({ message: 'Colocation lancée.', equipeId, membres: accepted });
   } catch (err) {
     next(err);
   }
@@ -454,6 +535,7 @@ module.exports = {
   create, 
   updateMine, 
   updateStatus,
+  remove,
   decide,
   launchColocation
 };
