@@ -572,6 +572,26 @@ async function journal(req, res, next) {
   }
 }
 
+async function deleteJournalEntry(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: 'ID invalide.' });
+    }
+
+    await ensureBackofficeSchema();
+    const existing = await query('SELECT id_action FROM journal_actions WHERE id_action = ?', [id]);
+    if (!existing.length) {
+      return res.status(404).json({ message: 'Entrée introuvable.' });
+    }
+
+    await query('DELETE FROM journal_actions WHERE id_action = ?', [id]);
+    res.json({ message: 'Entrée du journal supprimée.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function suiviMissions(req, res, next) {
   try {
     const [services, contratsCount, rdv, ca, demandes] = await Promise.all([
@@ -1098,6 +1118,7 @@ module.exports = {
   deleteContactMessage,
   replyContactMessage,
   journal,
+  deleteJournalEntry,
   suiviMissions,
   servicesCkoo,
   createServiceCkoo,

@@ -37,6 +37,7 @@ router.get('/messages-contact', controller.contactMessages);
 router.delete('/messages-contact/:id', controller.deleteContactMessage);
 router.post('/messages-contact/:id/reply', controller.replyContactMessage);
 router.get('/journal', controller.journal);
+router.delete('/journal/:id', controller.deleteJournalEntry);
 router.get('/suivi-missions', controller.suiviMissions);
 router.get('/services-ckoo', controller.servicesCkoo);
 router.post('/services-ckoo', controller.createServiceCkoo);
