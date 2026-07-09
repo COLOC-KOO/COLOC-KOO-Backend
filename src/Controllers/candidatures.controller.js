@@ -116,13 +116,24 @@ async function listAll(req, res, next) {
 
 async function create(req, res, next) {
   try {
+    console.log("📥 ===== CREATE CANDIDATURE =====");
+    console.log("📥 req.user:", req.user);
+    console.log("📥 req.user.id:", req.user?.id);
+    console.log("📥 req.body:", req.body);
+
     const { id_annonce, message, statut = 'envoyee', membres = [] } = req.body;
     
     if (!id_annonce) {
+      console.log("❌ id_annonce manquant");
       return res.status(400).json({ message: 'Annonce requise.' });
     }
 
-    // 🔥 VÉRIFICATION DES DOUBLONS
+    // Vérifier que req.user.id existe
+    if (!req.user || !req.user.id) {
+      console.log("❌ Utilisateur non authentifié ou ID manquant");
+      return res.status(401).json({ message: 'Utilisateur non authentifié.' });
+    }
+
     const existing = await query(
       `SELECT COUNT(*) as count 
        FROM candidatures 
@@ -130,38 +141,26 @@ async function create(req, res, next) {
       [req.user.id, id_annonce]
     );
 
+    console.log(`📊 Candidatures existantes: ${existing[0].count}`);
+
     if (existing[0].count > 0) {
+      console.log("⚠️ DOUBLON DÉTECTÉ");
       return res.status(400).json({ 
-        message: 'Vous avez déjà postulé à cette annonce.',
-        code: 'DUPLICATE_APPLICATION'
+        message: 'Vous avez déjà postulé à cette annonce.'
       });
     }
 
-    // Insérer la candidature
     const id = await insertAndGetId(
       `INSERT INTO candidatures (id_utilisateur, id_annonce, message, statut) VALUES (?, ?, ?, ?)`,
       [req.user.id, id_annonce, message || null, normalizeStatus(statut)]
     );
 
-    // Insérer les membres si présents
-    for (const membre of membres) {
-      if (!membre?.nom) continue;
-      await query(
-        'INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, membre.nom, membre.initiales || null, membre.statut || 'en_attente', membre.profession || null, membre.age || null]
-      );
-    }
+    console.log(`✅ Candidature créée avec ID: ${id}`);
 
     const created = await query('SELECT * FROM candidatures WHERE id_candidature = ? LIMIT 1', [id]);
     res.status(201).json(mapCandidature(created[0]));
   } catch (err) {
-    // Gérer les erreurs de contrainte UNIQUE si elle existe
-    if (err.code === 'ER_DUP_ENTRY' || err.sqlMessage?.includes('Duplicate entry')) {
-      return res.status(400).json({ 
-        message: 'Vous avez déjà postulé à cette annonce.',
-        code: 'DUPLICATE_APPLICATION'
-      });
-    }
+    console.error("❌ ERREUR:", err);
     next(err);
   }
 }
@@ -201,6 +200,33 @@ async function updateStatus(req, res, next) {
 }
 
 // Vérifier si un utilisateur a déjà postulé à une annonce spécifique
+// async function checkUserApplied(req, res, next) {
+//   try {
+//     const { annonceId, userId } = req.query;
+    
+//     if (!annonceId || !userId) {
+//       return res.status(400).json({ 
+//         message: 'Les paramètres annonceId et userId sont requis.' 
+//       });
+//     }
+
+//     const rows = await query(
+//       `SELECT COUNT(*) as count 
+//        FROM candidatures c
+//        WHERE c.id_annonce = ? AND c.id_utilisateur = ?`,
+//       [annonceId, userId]
+//     );
+
+//     res.json({ 
+//       hasApplied: rows[0].count > 0,
+//       count: rows[0].count
+//     });
+//   } catch (err) {
+//     next(err);
+//   }
+// }
+
+// Dans candidatures.controller.js
 async function checkUserApplied(req, res, next) {
   try {
     const { annonceId, userId } = req.query;
@@ -209,6 +235,12 @@ async function checkUserApplied(req, res, next) {
       return res.status(400).json({ 
         message: 'Les paramètres annonceId et userId sont requis.' 
       });
+    }
+
+    // Si l'utilisateur est authentifié, on vérifie si c'est le même
+    if (req.user && req.user.id !== parseInt(userId)) {
+      // Optionnel : vérifier si l'utilisateur a le droit de voir cette info
+      // Pour l'instant, on laisse passer
     }
 
     const rows = await query(
