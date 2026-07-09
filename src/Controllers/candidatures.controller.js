@@ -36,6 +36,31 @@ function mapCandidature(row, membres = []) {
   };
 }
 
+async function getAnnonceOwner(annonceId) {
+  const rows = await query('SELECT id_utilisateur, titre FROM annonces WHERE id_annonce = ? LIMIT 1', [annonceId]);
+  return rows[0] || null;
+}
+
+function canManageCandidature(reqUser, ownerId) {
+  const userId = Number(reqUser?.id ?? reqUser?.id_utilisateur ?? reqUser?.userId ?? reqUser?.sub);
+  const ownerUserId = Number(ownerId);
+
+  if (Number.isInteger(userId) && Number.isInteger(ownerUserId) && userId === ownerUserId) {
+    return true;
+  }
+
+  const role = String(reqUser?.role || reqUser?.poste || '').toLowerCase();
+  return ['super_admin', 'admin', 'moderator'].includes(role);
+}
+
+async function ensureEquipeForAnnonce(annonceId, annonceTitre) {
+  const existing = await query('SELECT id_equipe FROM equipes WHERE id_annonce = ? LIMIT 1', [annonceId]);
+  if (existing.length) return existing[0].id_equipe;
+
+  const equipeNom = `Equipe ${annonceTitre || `Annonce ${annonceId}`}`.slice(0, 255);
+  return insertAndGetId('INSERT INTO equipes (id_annonce, nom, statut) VALUES (?, ?, ?)', [annonceId, equipeNom, 'forming']);
+}
+
 async function listMine(req, res, next) {
   try {
     const rows = await query(
@@ -199,6 +224,116 @@ async function updateStatus(req, res, next) {
   }
 }
 
+async function decide(req, res, next) {
+  try {
+    const candidatureId = Number(req.params.id);
+    const { action, message } = req.body;
+    if (!Number.isInteger(candidatureId)) {
+      return res.status(400).json({ message: 'Candidature invalide.' });
+    }
+    if (!['accept', 'refuse', 'discuss'].includes(action)) {
+      return res.status(400).json({ message: 'Action invalide.' });
+    }
+
+    const candidatureRows = await query(
+      `SELECT c.id_candidature, c.id_annonce, c.id_utilisateur, c.statut, a.id_utilisateur AS owner_id, a.titre
+       FROM candidatures c
+       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
+       WHERE c.id_candidature = ? LIMIT 1`,
+      [candidatureId]
+    );
+
+    if (!candidatureRows.length) {
+      return res.status(404).json({ message: 'Candidature introuvable.' });
+    }
+
+    const candidature = candidatureRows[0];
+
+    if (!canManageCandidature(req.user, candidature.owner_id)) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas gérer cette candidature.' });
+    }
+
+    if (action === 'discuss') {
+      const contenu = message || `Bonjour, je souhaite discuter de votre candidature pour l'annonce ${candidature.titre || candidature.id_annonce}.`;
+      const conversationId = await insertAndGetId(
+        `INSERT INTO messages (id_expediteur, id_destinataire, id_annonce, sujet, contenu)
+         VALUES (?, ?, ?, ?, ?)`,
+        [req.user.id, candidature.id_utilisateur, candidature.id_annonce, 'Discussion candidature', contenu]
+      );
+      await query(
+        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+         VALUES (?, 'message', ?, ?, ?)`,
+        [candidature.id_utilisateur, 'Nouvelle discussion', contenu.slice(0, 255), `/messages/${req.user.id}`]
+      ).catch(() => {});
+      return res.json({ message: 'Discussion lancée.', conversationId });
+    }
+
+    const equipeId = await ensureEquipeForAnnonce(candidature.id_annonce, candidature.titre);
+
+    if (action === 'accept') {
+      await query('UPDATE candidatures SET statut = ? WHERE id_candidature = ?', [normalizeStatus('acceptee'), candidatureId]);
+      await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['selected', equipeId]);
+      await query(
+        `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
+         VALUES (?, ?, 'accepted')`,
+        [equipeId, candidature.id_utilisateur]
+      );
+      return res.json({ message: 'Candidature acceptée.', equipeId });
+    }
+
+    if (action === 'refuse') {
+      await query('UPDATE candidatures SET statut = ? WHERE id_candidature = ?', [normalizeStatus('refusee'), candidatureId]);
+      await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['rejected', equipeId]);
+      await query(
+        `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
+         VALUES (?, ?, 'refused')`,
+        [equipeId, candidature.id_utilisateur]
+      );
+      return res.json({ message: 'Candidature refusée.', equipeId });
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function launchColocation(req, res, next) {
+  try {
+    const annonceId = Number(req.params.id);
+    const rows = await query(
+      `SELECT a.id_annonce, a.id_utilisateur, a.titre
+       FROM annonces a
+       WHERE a.id_annonce = ? LIMIT 1`,
+      [annonceId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+
+    const annonce = rows[0];
+    if (req.user.id !== Number(annonce.id_utilisateur)) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas lancer cette colocation.' });
+    }
+
+    const accepted = await query(
+      `SELECT COUNT(*) as count
+       FROM candidatures c
+       WHERE c.id_annonce = ? AND c.statut = ?`,
+      [annonceId, normalizeStatus('acceptee')]
+    );
+
+    if (Number(accepted[0].count) < 3) {
+      return res.status(400).json({ message: 'Au moins 3 candidats acceptés sont requis.' });
+    }
+
+    const equipeId = await ensureEquipeForAnnonce(annonceId, annonce.titre);
+    await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['complete', equipeId]);
+    return res.json({ message: 'Colocation lancée.', equipeId });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Vérifier si un utilisateur a déjà postulé à une annonce spécifique
 // async function checkUserApplied(req, res, next) {
 //   try {
@@ -318,5 +453,7 @@ module.exports = {
   checkUserApplied,
   create, 
   updateMine, 
-  updateStatus
+  updateStatus,
+  decide,
+  launchColocation
 };
