@@ -3,6 +3,7 @@ const controller = require('../Controllers/favoris.controller');
 const { requireAuth } = require('../Middleware/auth.middleware');
 
 router.get('/', requireAuth, controller.list);
+// router.get('/check/:idAnnonce', requireAuth, controller.check); // ✅ Nouvelle route
 router.post('/:idAnnonce', requireAuth, controller.toggle);
 router.delete('/:idAnnonce', requireAuth, controller.remove);
 
