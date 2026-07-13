@@ -367,7 +367,7 @@ async function launchColocation(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
     const rows = await query(
-      `SELECT a.id_annonce, a.id_utilisateur, a.titre
+      `SELECT a.id_annonce, a.id_utilisateur, a.titre, a.total_colocataires
        FROM annonces a
        WHERE a.id_annonce = ? LIMIT 1`,
       [annonceId]
@@ -396,8 +396,9 @@ async function launchColocation(req, res, next) {
       [annonceId, normalizeStatus('acceptee')]
     );
 
-    if (accepted.length < 3) {
-      return res.status(400).json({ message: 'Au moins 3 candidats acceptés sont requis.' });
+    const requiredCount = Number(annonce.total_colocataires) || 3;
+    if (accepted.length < requiredCount) {
+      return res.status(400).json({ message: `Au moins ${requiredCount} candidats acceptés sont requis.` });
     }
 
     const equipeId = await ensureEquipeForAnnonce(annonceId, annonce.titre);
@@ -430,6 +431,123 @@ async function launchColocation(req, res, next) {
     await query('DELETE FROM membres_equipes WHERE id_equipe = ?', [equipeId]);
 
     return res.json({ message: 'Colocation lancée.', equipeId, membres: accepted });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createContracts(req, res, next) {
+  try {
+    const annonceId = Number(req.params.id);
+    const { mode } = req.body;
+    if (!['contrat', 'edl', 'both'].includes(mode)) {
+      return res.status(400).json({ message: 'Mode de contrat invalide.' });
+    }
+
+    const rows = await query(
+      `SELECT a.id_annonce, a.id_utilisateur, a.titre, a.total_colocataires
+       FROM annonces a
+       WHERE a.id_annonce = ? LIMIT 1`,
+      [annonceId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+
+    const annonce = rows[0];
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const canCreateContract = currentUserId === Number(annonce.id_utilisateur)
+      || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    if (!canCreateContract) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas créer ce contrat.' });
+    }
+
+    const accepted = await query(
+      `SELECT c.id_candidature, c.id_utilisateur, u.nom, u.prenom, u.email
+       FROM candidatures c
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+       WHERE c.id_annonce = ? AND c.statut = ?
+       ORDER BY c.date_creation ASC`,
+      [annonceId, normalizeStatus('acceptee')]
+    );
+
+    const requiredCount = Number(annonce.total_colocataires) || 3;
+    if (accepted.length < requiredCount) {
+      return res.status(400).json({ message: `Au moins ${requiredCount} candidats acceptés sont requis.` });
+    }
+
+    const ownerRows = await query(
+      'SELECT id_utilisateur, nom, prenom, email, telephone FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
+      [annonce.id_utilisateur]
+    );
+
+    const parties = [];
+    if (ownerRows.length) {
+      const owner = ownerRows[0];
+      parties.push({
+        id_utilisateur: owner.id_utilisateur,
+        nom_complet: [owner.prenom, owner.nom].filter(Boolean).join(' ').trim() || `Propriétaire ${owner.id_utilisateur}`,
+        role: 'proprietaire',
+        cin: null,
+        telephone: owner.telephone || null,
+        email: owner.email || null,
+        commentaire: 'Propriétaire du logement',
+      });
+    }
+
+    for (const candidate of accepted) {
+      parties.push({
+        id_utilisateur: candidate.id_utilisateur,
+        nom_complet: [candidate.prenom, candidate.nom].filter(Boolean).join(' ').trim() || `Locataire ${candidate.id_utilisateur}`,
+        role: 'colocataire',
+        cin: null,
+        telephone: null,
+        email: candidate.email || null,
+        commentaire: 'Locataire accepté',
+      });
+    }
+
+    const levels = mode === 'both' ? ['contrat', 'edl'] : [mode];
+    const ids = [];
+    const createdContracts = [];
+
+    for (const type of levels) {
+      const reference = `CT-${Date.now().toString().slice(-8)}`;
+      const id_contrat = await insertAndGetId(
+        'INSERT INTO contrats (reference, id_annonce, type, statut, montant_total) VALUES (?, ?, ?, ?, ?)',
+        [reference, annonceId, type, type === 'edl' ? 'a-planifier' : 'a-emettre', null]
+      );
+      ids.push(Number(id_contrat));
+
+      for (const partie of parties) {
+        await query(
+          `INSERT INTO parties_contrats (id_contrat, id_utilisateur, nom_complet, role, cin, telephone, email, commentaire)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id_contrat,
+            partie.id_utilisateur || null,
+            partie.nom_complet || null,
+            partie.role,
+            partie.cin || null,
+            partie.telephone || null,
+            partie.email || null,
+            partie.commentaire || null,
+          ]
+        );
+      }
+
+      const createdContractRows = await query('SELECT * FROM contrats WHERE id_contrat = ? LIMIT 1', [id_contrat]);
+      const createdPartiesRows = await query('SELECT * FROM parties_contrats WHERE id_contrat = ? ORDER BY role, id', [id_contrat]);
+      const createdContract = {
+        ...createdContractRows[0],
+        parties: createdPartiesRows,
+      };
+      createdContracts.push(createdContract);
+    }
+
+    return res.json({ message: 'Contrat(s) créé(s).', contratIds: ids, contracts: createdContracts });
   } catch (err) {
     next(err);
   }
@@ -557,5 +675,6 @@ module.exports = {
   updateStatus,
   remove,
   decide,
-  launchColocation
+  launchColocation,
+  createContracts,
 };
