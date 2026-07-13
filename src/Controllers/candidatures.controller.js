@@ -387,13 +387,14 @@ async function launchColocation(req, res, next) {
       return res.status(403).json({ message: 'Vous ne pouvez pas lancer cette colocation.' });
     }
 
+    const acceptedStatuses = [...new Set(['acceptee', normalizeStatus('acceptee')])];
     const accepted = await query(
       `SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, u.nom, u.prenom, u.email
        FROM candidatures c
        LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
-       WHERE c.id_annonce = ? AND c.statut = ?
+       WHERE c.id_annonce = ? AND c.statut IN (${acceptedStatuses.map(() => '?').join(', ')})
        ORDER BY c.date_creation ASC`,
-      [annonceId, normalizeStatus('acceptee')]
+      [annonceId, ...acceptedStatuses]
     );
 
     const requiredCount = Number(annonce.total_colocataires) || 3;
@@ -417,18 +418,25 @@ async function launchColocation(req, res, next) {
           `UPDATE candidature_membres
            SET nom = ?, initiales = ?, statut = ?, profession = ?, age = ?
            WHERE id_candidature = ?`,
-          [memberName, initiales, 'active', null, null, candidature.id_candidature]
+          [memberName, initiales, 'accepte', null, null, candidature.id_candidature]
         );
       } else {
         await query(
           `INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [candidature.id_candidature, memberName, initiales, 'active', null, null]
+          [candidature.id_candidature, memberName, initiales, 'accepte', null, null]
         );
       }
     }
 
     await query('DELETE FROM membres_equipes WHERE id_equipe = ?', [equipeId]);
+    for (const candidature of accepted) {
+      await query(
+        `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
+         VALUES (?, ?, ?)`,
+        [equipeId, candidature.id_utilisateur, 'accepted']
+      );
+    }
 
     return res.json({ message: 'Colocation lancée.', equipeId, membres: accepted });
   } catch (err) {
