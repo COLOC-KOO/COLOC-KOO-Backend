@@ -159,6 +159,12 @@ async function create(req, res, next) {
       return res.status(401).json({ message: 'Utilisateur non authentifié.' });
     }
 
+    const annonce = await getAnnonceOwner(id_annonce);
+    if (!annonce) {
+      console.log("❌ Annonce introuvable");
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+
     const existing = await query(
       `SELECT COUNT(*) as count 
        FROM candidatures 
@@ -181,6 +187,20 @@ async function create(req, res, next) {
     );
 
     console.log(`✅ Candidature créée avec ID: ${id}`);
+
+    // Créer une notification pour le propriétaire de l'annonce
+    try {
+      const notifTitle = 'Nouvelle candidature sur votre annonce';
+      const notifText = `Un colocataire a postulé à votre annonce « ${annonce.titre || 'votre annonce'} ».`;
+      const notifLink = `/annonces/${id_annonce}`;
+      await query(
+        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+         VALUES (?, 'candidature', ?, ?, ?)`,
+        [annonce.id_utilisateur, notifTitle, notifText, notifLink]
+      );
+    } catch (notifError) {
+      console.error('❌ Erreur notification propriétaire:', notifError);
+    }
 
     const created = await query('SELECT * FROM candidatures WHERE id_candidature = ? LIMIT 1', [id]);
     res.status(201).json(mapCandidature(created[0]));
