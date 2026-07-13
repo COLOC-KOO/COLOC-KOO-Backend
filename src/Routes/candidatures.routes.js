@@ -8,6 +8,7 @@ router.patch('/:id', requireAuth, controller.updateMine);
 router.delete('/:id', requireAuth, controller.remove);
 router.post('/:id/decision', requireAuth, controller.decide);
 router.post('/annonce/:id/launch', requireAuth, controller.launchColocation);
+router.post('/annonce/:id/contrats', requireAuth, controller.createContracts);
 router.get('/admin/all', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.listAll);
 router.patch('/:id/status', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.updateStatus);
 
