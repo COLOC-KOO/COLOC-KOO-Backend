@@ -3,7 +3,7 @@ const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 
 async function list(req, res, next) {
   try {
-    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service } = req.query;
+    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service, coloc } = req.query;
     const clauses = [];
     const values = [];
     const isMine = mine === '1' || mine === 'true' || mine === true;
@@ -30,6 +30,15 @@ async function list(req, res, next) {
       } else {
         clauses.push('a.type_annonce = ?');
         values.push(type === 'proprio' ? 'creation' : 'existante');
+      }
+    }
+    if (coloc && coloc !== 'all') {
+      if (coloc === 'existantes') {
+        clauses.push('a.type_annonce = ?');
+        values.push('existante');
+      } else if (coloc === 'a_creer') {
+        clauses.push('a.type_annonce = ?');
+        values.push('creation');
       }
     }
     if (ville) {
@@ -77,6 +86,7 @@ async function list(req, res, next) {
             MIN(ch.surface) AS chambre_surface, 
             MIN(ch.prix_loyer) AS prix_loyer, 
             MIN(ch.date_disponibilite) AS date_disponibilite,
+            COUNT(DISTINCT c.id_candidature) AS candidature_count,
             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
@@ -85,6 +95,7 @@ async function list(req, res, next) {
       JOIN villes v ON v.id_ville = a.id_ville
       JOIN regions r ON r.id_region = v.id_region
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN candidatures c ON c.id_annonce = a.id_annonce
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
@@ -152,6 +163,7 @@ async function getById(req, res, next) {
              MIN(ch.surface) AS chambre_surface, 
              MIN(ch.prix_loyer) AS prix_loyer, 
              MIN(ch.date_disponibilite) AS date_disponibilite,
+             COUNT(DISTINCT c.id_candidature) AS candidature_count,
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
@@ -160,6 +172,7 @@ async function getById(req, res, next) {
       JOIN villes v ON v.id_ville = a.id_ville
       JOIN regions r ON r.id_region = v.id_region
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN candidatures c ON c.id_annonce = a.id_annonce
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
