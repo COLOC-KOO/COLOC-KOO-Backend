@@ -58,6 +58,7 @@ function mapAnnonceRow(row) {
     type_annonce: row.type_annonce,
     type_propriete: row.type_propriete,
     total_colocataires: row.total_colocataires,
+    candidature_count: row.candidature_count != null ? Number(row.candidature_count) : 0,
     surface_totale: row.surface_totale,
     adresse_exacte: row.adresse_exacte,
     quartier: row.quartier,
