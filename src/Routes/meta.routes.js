@@ -6,5 +6,6 @@ router.get('/langues', controller.listLangues);
 router.get('/regions', controller.listRegions);
 router.get('/villes', controller.listVilles);
 router.get('/services', controller.listServices);
+router.get('/contract-config', controller.contractConfig);
 
 module.exports = router;

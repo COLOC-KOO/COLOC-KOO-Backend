@@ -444,12 +444,52 @@ async function launchColocation(req, res, next) {
   }
 }
 
+// Bareme de prix par defaut (aligne sur la maquette candidatures v4_17_3).
+// Surchargeable par le super-admin via configuration_backoffice (cles CONTRACT_TIERS / EDL_PRIX).
+const DEFAULT_CONTRACT_TIERS = [
+  { maxLoyer: 450000, prix: 27000 },
+  { maxLoyer: 1350000, prix: 47000 },
+  { maxLoyer: null, prix: 60000 },
+];
+const DEFAULT_EDL_PRIX = 10000;
+
+async function getConfigValue(cle, fallback) {
+  try {
+    const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
+    if (!rows.length || rows[0].valeur == null) return fallback;
+    const raw = rows[0].valeur;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch {
+    return fallback;
+  }
+}
+
+async function resolveContractPricing() {
+  const tiers = await getConfigValue('CONTRACT_TIERS', DEFAULT_CONTRACT_TIERS);
+  const edlPrix = Number(await getConfigValue('EDL_PRIX', DEFAULT_EDL_PRIX)) || DEFAULT_EDL_PRIX;
+  const contratPrixFor = (loyerTotal) => {
+    const list = Array.isArray(tiers) && tiers.length ? tiers : DEFAULT_CONTRACT_TIERS;
+    for (const tier of list) {
+      if (tier.maxLoyer == null || Number(loyerTotal) <= Number(tier.maxLoyer)) return Number(tier.prix) || 0;
+    }
+    return Number(list[list.length - 1].prix) || 0;
+  };
+  return { edlPrix, contratPrixFor };
+}
+
 async function createContracts(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
-    const { mode } = req.body;
+    const { mode, type_bail = null, clause_solidarite = null } = req.body;
     if (!['contrat', 'edl', 'both'].includes(mode)) {
       return res.status(400).json({ message: 'Mode de contrat invalide.' });
+    }
+    const needsBail = mode === 'contrat' || mode === 'both';
+    if (needsBail && !['individuel', 'collectif'].includes(type_bail)) {
+      return res.status(400).json({ message: 'Type de bail requis (individuel ou collectif).' });
+    }
+    if (needsBail && clause_solidarite != null && !['avec', 'sans'].includes(clause_solidarite)) {
+      return res.status(400).json({ message: 'Clause de solidarite invalide.' });
     }
 
     const rows = await query(
@@ -517,15 +557,30 @@ async function createContracts(req, res, next) {
       });
     }
 
+    // Loyer mensuel total de la colocation (somme des chambres) pour choisir la tranche de prix.
+    const loyerRows = await query('SELECT COALESCE(SUM(prix_loyer), 0) AS total FROM chambres WHERE id_annonce = ?', [annonceId]);
+    const loyerTotal = Number(loyerRows[0]?.total || 0);
+    const { edlPrix, contratPrixFor } = await resolveContractPricing();
+    const priceFor = (type) => (type === 'edl' ? edlPrix : contratPrixFor(loyerTotal));
+
     const levels = mode === 'both' ? ['contrat', 'edl'] : [mode];
     const ids = [];
     const createdContracts = [];
 
     for (const type of levels) {
       const reference = `CT-${Date.now().toString().slice(-8)}`;
+      const montant = priceFor(type);
       const id_contrat = await insertAndGetId(
-        'INSERT INTO contrats (reference, id_annonce, type, statut, montant_total) VALUES (?, ?, ?, ?, ?)',
-        [reference, annonceId, type, type === 'edl' ? 'a-planifier' : 'a-emettre', null]
+        'INSERT INTO contrats (reference, id_annonce, type, type_bail, clause_solidarite, statut, montant_total) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          reference,
+          annonceId,
+          type,
+          type === 'contrat' ? type_bail : null,
+          type === 'contrat' ? clause_solidarite : null,
+          type === 'edl' ? 'a-planifier' : 'a-emettre',
+          montant,
+        ]
       );
       ids.push(Number(id_contrat));
 
@@ -556,6 +611,65 @@ async function createContracts(req, res, next) {
     }
 
     return res.json({ message: 'Contrat(s) créé(s).', contratIds: ids, contracts: createdContracts });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Paiement Mobile Money manuel d'un contrat (maquette : l'usager saisit sa reference,
+// le back-office qualifie ensuite). Aucune passerelle bancaire automatique.
+const MOBILE_MONEY_MOYENS = ['MVOLA', 'Orange Money'];
+
+async function submitContractPayment(req, res, next) {
+  try {
+    const contratId = Number(req.params.id);
+    const { moyen_paiement, reference_operateur, montant } = req.body;
+
+    if (!Number.isInteger(contratId) || contratId <= 0) {
+      return res.status(400).json({ message: 'Contrat invalide.' });
+    }
+    if (!MOBILE_MONEY_MOYENS.includes(moyen_paiement)) {
+      return res.status(400).json({ message: 'Moyen de paiement invalide (Orange Money ou MVOLA).' });
+    }
+    if (!reference_operateur || String(reference_operateur).trim().length < 4) {
+      return res.status(400).json({ message: 'Référence de paiement Mobile Money requise.' });
+    }
+
+    const rows = await query(
+      `SELECT c.id_contrat, c.montant_total, c.type, a.id_annonce, a.id_utilisateur
+       FROM contrats c
+       JOIN annonces a ON a.id_annonce = c.id_annonce
+       WHERE c.id_contrat = ? LIMIT 1`,
+      [contratId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Contrat introuvable.' });
+    }
+    const contrat = rows[0];
+
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const canPay = currentUserId === Number(contrat.id_utilisateur)
+      || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+    if (!canPay) {
+      return res.status(403).json({ message: 'Vous ne pouvez pas régler ce contrat.' });
+    }
+
+    const montantDu = Number(montant) > 0 ? Number(montant) : Number(contrat.montant_total || 0);
+    const reference = `PAY-${Date.now().toString().slice(-8)}`;
+    const id_paiement = await insertAndGetId(
+      `INSERT INTO paiements
+        (reference, id_utilisateur, id_contrat, id_annonce, montant_du, montant_recu, moyen_paiement, service_type, statut, date_paiement, reference_operateur)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'contrat', 'a-verifier', CURDATE(), ?)`,
+      [reference, currentUserId, contratId, contrat.id_annonce, montantDu, montantDu, moyen_paiement, String(reference_operateur).trim()]
+    );
+
+    return res.status(201).json({
+      message: 'Paiement enregistré. Il sera vérifié par notre équipe.',
+      id_paiement: Number(id_paiement),
+      reference,
+      statut: 'a-verifier',
+    });
   } catch (err) {
     next(err);
   }
@@ -685,4 +799,5 @@ module.exports = {
   decide,
   launchColocation,
   createContracts,
+  submitContractPayment,
 };
