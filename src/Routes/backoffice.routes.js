@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const controller = require('../Controllers/backoffice.controller');
 const { requireAuth, requireRole } = require('../Middleware/auth.middleware');
+// Importer les routes des campagnes
+const campagnesRoutes = require('./campagnes.routes');
 
 const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -69,5 +71,7 @@ router.delete('/membres/:id', controller.deleteMember);
 router.patch('/annonces/:id/status', controller.moderateAnnonce);
 router.patch('/paiements/:id/status', controller.updatePaiementStatus);
 router.patch('/members/:id/status', controller.moderateMember);
+// ===== ROUTES DES CAMPAGNES =====
+router.use('/campagnes', campagnesRoutes);
 
 module.exports = router;
