@@ -43,13 +43,66 @@ const DEFAULT_MAIL_NOTE = {
   contrat: "Le contrat finalisé te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés. Pour compléter les informations nécessaires à la rédaction du contrat, rendez-vous dans ta messagerie.",
   edl: "Le document te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés.",
 };
+// Gabarit HTML du vrai document de contrat (100% en base). Les {placeholders} sont
+// remplaces cote backend a partir des donnees reelles (parties, logement, adresse exacte...).
+const DEFAULT_DOCUMENT_TEMPLATE = `<h1>Contrat de colocation — Sarintany'COLOC</h1>
+<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
+
+<h2>Entre les soussigné·e·s</h2>
+<p>Le/La propriétaire (bailleur) : <b>{proprietaire}</b></p>
+<p>Les colocataires (preneurs) : <b>{colocataires}</b></p>
+
+<h2>Désignation du logement</h2>
+<p>Adresse : <b>{adresse}</b>.</p>
+<p>Nature du bien : {type_bien}.</p>
+<p>Date d'entrée dans les lieux : <b>{date_entree}</b>.</p>
+
+<h2>Conditions du bail</h2>
+<p>Type de bail : <b>{type_bail}</b>.</p>
+<p>{solidarite_phrase}</p>
+<p>Loyer mensuel : <b>{loyer} Ar</b> — Charges : <b>{charges} Ar</b> — Dépôt de garantie : <b>{caution} Ar</b>.</p>
+
+<h2>Article 1 — Objet</h2>
+<p>Le présent contrat a pour objet de définir les règles de la vie commune et la répartition des charges entre les colocataires du logement désigné ci-dessus.</p>
+
+<h2>Article 2 — Éléments du contrat</h2>
+{clauses_list}
+
+<h2>Article 3 — État des lieux</h2>
+<p>Un état des lieux contradictoire est établi à l'entrée et à la sortie du logement et annexé au présent contrat.</p>
+
+<h2>Signatures</h2>
+{signatures}`;
+const DEFAULT_EDL_TEMPLATE = `<h1>État des lieux — Sarintany'COLOC</h1>
+<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
+
+<h2>Logement</h2>
+<p>Adresse : <b>{adresse}</b> ({type_bien}).</p>
+<p>Occupants : <b>{colocataires}</b>.</p>
+<p>Date d'entrée : <b>{date_entree}</b>.</p>
+
+<h2>Constat</h2>
+<p>Le présent document constate l'état du logement et de ses équipements à l'entrée et à la sortie des lieux (constat contradictoire entre le propriétaire et les colocataires).</p>
+
+<h2>Signatures</h2>
+{signatures}`;
 
 async function getConfigValue(cle, fallback) {
   try {
     const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
     if (!rows.length || rows[0].valeur == null) return fallback;
     const raw = rows[0].valeur;
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // La colonne JSON est deja parsee par mysql2. Si c'est une chaine, on tente
+    // un parse (double encodage) mais on renvoie la chaine telle quelle si ce
+    // n'est pas du JSON (ex : un gabarit HTML).
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
   } catch {
     return fallback;
   }
@@ -96,6 +149,8 @@ async function ensureContractContent() {
     BAIL_OPTIONS: DEFAULT_BAIL,
     SOLIDARITE_OPTIONS: DEFAULT_SOLIDARITE,
     CONTRACT_MAIL_NOTE: DEFAULT_MAIL_NOTE,
+    CONTRACT_DOCUMENT_TEMPLATE: DEFAULT_DOCUMENT_TEMPLATE,
+    CONTRACT_EDL_TEMPLATE: DEFAULT_EDL_TEMPLATE,
   };
   for (const [cle, valeur] of Object.entries(seeds)) {
     await query(
@@ -109,7 +164,7 @@ async function ensureContractContent() {
 async function contractConfig(req, res, next) {
   try {
     await ensureContractContent();
-    const [clauseRows, tiers, edlPrix, mobileMoney, offer, body, bail, solidarite, mailNote] = await Promise.all([
+    const [clauseRows, tiers, edlPrix, mobileMoney, offer, body, bail, solidarite, mailNote, contratOffers, edlOffers] = await Promise.all([
       query('SELECT titre, description FROM contrat_clauses WHERE est_actif = 1 ORDER BY ordre, id_clause'),
       getConfigValue('CONTRACT_TIERS', DEFAULT_CONTRACT_TIERS),
       getConfigValue('EDL_PRIX', DEFAULT_EDL_PRIX),
@@ -119,6 +174,9 @@ async function contractConfig(req, res, next) {
       getConfigValue('BAIL_OPTIONS', DEFAULT_BAIL),
       getConfigValue('SOLIDARITE_OPTIONS', DEFAULT_SOLIDARITE),
       getConfigValue('CONTRACT_MAIL_NOTE', DEFAULT_MAIL_NOTE),
+      // Offres de contrat / EDL depuis services_ckoo (choisies par le deposant).
+      query("SELECT id_service, cle_service, nom, description, prix FROM services_ckoo WHERE cle_service LIKE 'contrat%' AND est_actif = 1 ORDER BY nom"),
+      query("SELECT id_service, cle_service, nom, description, prix FROM services_ckoo WHERE cle_service LIKE 'edl%' AND est_actif = 1 ORDER BY nom"),
     ]);
     res.json({
       tiers: Array.isArray(tiers) && tiers.length ? tiers : DEFAULT_CONTRACT_TIERS,
@@ -130,6 +188,8 @@ async function contractConfig(req, res, next) {
       bail: Array.isArray(bail) && bail.length ? bail : DEFAULT_BAIL,
       solidarite: Array.isArray(solidarite) && solidarite.length ? solidarite : DEFAULT_SOLIDARITE,
       mailNote,
+      contratOffers: contratOffers.map((o) => ({ id: o.id_service, nom: o.nom, description: o.description, prix: Number(o.prix) || 0 })),
+      edlOffers: edlOffers.map((o) => ({ id: o.id_service, nom: o.nom, description: o.description, prix: Number(o.prix) || 0 })),
     });
   } catch (err) {
     next(err);
@@ -191,4 +251,4 @@ async function listServices(req, res, next) {
   }
 }
 
-module.exports = { listRoles, listLangues, listRegions, listVilles, listServices, contractConfig };
+module.exports = { listRoles, listLangues, listRegions, listVilles, listServices, contractConfig, ensureContractContent, getConfigValue };

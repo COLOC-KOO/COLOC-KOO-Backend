@@ -1,4 +1,5 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const { ensureContractContent } = require('./meta.controller');
 
 const PROGRESS_STEPS = [
   { key: 'envoyee', label: 'Envoyee' },
@@ -458,7 +459,17 @@ async function getConfigValue(cle, fallback) {
     const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
     if (!rows.length || rows[0].valeur == null) return fallback;
     const raw = rows[0].valeur;
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    // La colonne JSON est deja parsee par mysql2. Si c'est une chaine, on tente
+    // un parse (double encodage) mais on renvoie la chaine telle quelle si ce
+    // n'est pas du JSON (ex : un gabarit HTML).
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
   } catch {
     return fallback;
   }
@@ -480,20 +491,13 @@ async function resolveContractPricing() {
 async function createContracts(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
-    const { mode, type_bail = null, clause_solidarite = null } = req.body;
+    const { mode } = req.body;
     if (!['contrat', 'edl', 'both'].includes(mode)) {
       return res.status(400).json({ message: 'Mode de contrat invalide.' });
     }
-    const needsBail = mode === 'contrat' || mode === 'both';
-    if (needsBail && !['individuel', 'collectif'].includes(type_bail)) {
-      return res.status(400).json({ message: 'Type de bail requis (individuel ou collectif).' });
-    }
-    if (needsBail && clause_solidarite != null && !['avec', 'sans'].includes(clause_solidarite)) {
-      return res.status(400).json({ message: 'Clause de solidarite invalide.' });
-    }
 
     const rows = await query(
-      `SELECT a.id_annonce, a.id_utilisateur, a.titre, a.total_colocataires
+      `SELECT a.id_annonce, a.id_utilisateur, a.titre, a.total_colocataires, a.type_bail, a.clause_solidarite
        FROM annonces a
        WHERE a.id_annonce = ? LIMIT 1`,
       [annonceId]
@@ -511,6 +515,11 @@ async function createContracts(req, res, next) {
     if (!canCreateContract) {
       return res.status(403).json({ message: 'Vous ne pouvez pas créer ce contrat.' });
     }
+
+    // Le type de bail et la clause de solidarite sont HERITES de l'annonce (cahier des charges).
+    // Defaut raisonnable si une ancienne annonce ne les a pas encore definis.
+    const type_bail = ['individuel', 'collectif'].includes(annonce.type_bail) ? annonce.type_bail : 'collectif';
+    const clause_solidarite = ['avec', 'sans'].includes(annonce.clause_solidarite) ? annonce.clause_solidarite : 'sans';
 
     const accepted = await query(
       `SELECT c.id_candidature, c.id_utilisateur, u.nom, u.prenom, u.email
@@ -557,31 +566,49 @@ async function createContracts(req, res, next) {
       });
     }
 
-    // Loyer mensuel total de la colocation (somme des chambres) pour choisir la tranche de prix.
-    const loyerRows = await query('SELECT COALESCE(SUM(prix_loyer), 0) AS total FROM chambres WHERE id_annonce = ?', [annonceId]);
-    const loyerTotal = Number(loyerRows[0]?.total || 0);
-    const { edlPrix, contratPrixFor } = await resolveContractPricing();
-    const priceFor = (type) => (type === 'edl' ? edlPrix : contratPrixFor(loyerTotal));
+    // Prix = SOMME de toutes les offres actives du type dans services_ckoo (cle_service contrat_* / edl_*).
+    const sumOffers = async (likePrefix) => {
+      const r = await query("SELECT COALESCE(SUM(prix), 0) AS total FROM services_ckoo WHERE cle_service LIKE ? AND est_actif = 1", [likePrefix]);
+      return Number(r[0]?.total || 0);
+    };
+    const contratMontant = await sumOffers('contrat%');
+    const edlMontant = await sumOffers('edl%');
+    const priceFor = (type) => (type === 'edl' ? edlMontant : contratMontant);
 
     const levels = mode === 'both' ? ['contrat', 'edl'] : [mode];
     const ids = [];
     const createdContracts = [];
 
     for (const type of levels) {
-      const reference = `CT-${Date.now().toString().slice(-8)}`;
       const montant = priceFor(type);
-      const id_contrat = await insertAndGetId(
-        'INSERT INTO contrats (reference, id_annonce, type, type_bail, clause_solidarite, statut, montant_total) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          reference,
-          annonceId,
-          type,
-          type === 'contrat' ? type_bail : null,
-          type === 'contrat' ? clause_solidarite : null,
-          type === 'edl' ? 'a-planifier' : 'a-emettre',
-          montant,
-        ]
+      // Reutilise le contrat existant de ce type pour l'annonce (pas de doublon).
+      const existingRows = await query(
+        'SELECT id_contrat FROM contrats WHERE id_annonce = ? AND type = ? ORDER BY id_contrat LIMIT 1',
+        [annonceId, type]
       );
+      let id_contrat;
+      if (existingRows.length) {
+        id_contrat = Number(existingRows[0].id_contrat);
+        await query(
+          'UPDATE contrats SET type_bail = ?, clause_solidarite = ?, montant_total = ? WHERE id_contrat = ?',
+          [type === 'contrat' ? type_bail : null, type === 'contrat' ? clause_solidarite : null, montant, id_contrat]
+        );
+        await query('DELETE FROM parties_contrats WHERE id_contrat = ?', [id_contrat]);
+      } else {
+        const reference = `CT-${Date.now().toString().slice(-8)}`;
+        id_contrat = await insertAndGetId(
+          'INSERT INTO contrats (reference, id_annonce, type, type_bail, clause_solidarite, statut, montant_total) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [
+            reference,
+            annonceId,
+            type,
+            type === 'contrat' ? type_bail : null,
+            type === 'contrat' ? clause_solidarite : null,
+            type === 'edl' ? 'a-planifier' : 'a-emettre',
+            montant,
+          ]
+        );
+      }
       ids.push(Number(id_contrat));
 
       for (const partie of parties) {
@@ -636,7 +663,7 @@ async function submitContractPayment(req, res, next) {
     }
 
     const rows = await query(
-      `SELECT c.id_contrat, c.montant_total, c.type, a.id_annonce, a.id_utilisateur
+      `SELECT c.id_contrat, c.montant_total, c.type, c.statut, a.id_annonce, a.id_utilisateur AS owner_id, a.total_colocataires
        FROM contrats c
        JOIN annonces a ON a.id_annonce = c.id_annonce
        WHERE c.id_contrat = ? LIMIT 1`,
@@ -649,26 +676,66 @@ async function submitContractPayment(req, res, next) {
 
     const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
     const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
-    const canPay = currentUserId === Number(contrat.id_utilisateur)
-      || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
-    if (!canPay) {
-      return res.status(403).json({ message: 'Vous ne pouvez pas régler ce contrat.' });
+    const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    // L'honoraire de service Coloc'KOO est reparti entre les colocataires : chaque
+    // colocataire regle SA PART, et ce paiement vaut acceptation du contrat.
+    // On se base sur les parties du contrat (source fiable des colocataires concernes).
+    const partyRows = await query(
+      'SELECT id_utilisateur, role FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL',
+      [contratId]
+    );
+    const colocIds = partyRows
+      .filter((p) => /coloc/i.test(p.role || ''))
+      .map((p) => Number(p.id_utilisateur));
+    const isColocataire = colocIds.includes(currentUserId);
+    if (!isColocataire && currentUserId !== Number(contrat.owner_id) && !isStaff) {
+      return res.status(403).json({ message: 'Seuls les colocataires du contrat peuvent régler leur part.' });
     }
 
-    const montantDu = Number(montant) > 0 ? Number(montant) : Number(contrat.montant_total || 0);
+    // Empeche le double paiement de la meme personne pour ce contrat.
+    const already = await query(
+      "SELECT id_paiement FROM paiements WHERE id_contrat = ? AND id_utilisateur = ? AND service_type = 'contrat' LIMIT 1",
+      [contratId, currentUserId]
+    );
+    if (already.length) {
+      return res.status(409).json({ message: 'Vous avez déjà réglé votre part de ce contrat.' });
+    }
+
+    // Part de chacun = forfait Coloc'KOO / nombre de colocataires.
+    const nbColoc = Math.max(1, colocIds.length || Number(contrat.total_colocataires) || 1);
+    const part = Math.ceil(Number(contrat.montant_total || 0) / nbColoc);
+
     const reference = `PAY-${Date.now().toString().slice(-8)}`;
     const id_paiement = await insertAndGetId(
       `INSERT INTO paiements
         (reference, id_utilisateur, id_contrat, id_annonce, montant_du, montant_recu, moyen_paiement, service_type, statut, date_paiement, reference_operateur)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'contrat', 'a-verifier', CURDATE(), ?)`,
-      [reference, currentUserId, contratId, contrat.id_annonce, montantDu, montantDu, moyen_paiement, String(reference_operateur).trim()]
+      [reference, currentUserId, contratId, contrat.id_annonce, part, part, moyen_paiement, String(reference_operateur).trim()]
     );
 
+    // Le contrat est valide quand TOUS les colocataires ont regle leur part.
+    const paidRows = await query(
+      "SELECT COUNT(DISTINCT id_utilisateur) AS n FROM paiements WHERE id_contrat = ? AND service_type = 'contrat'",
+      [contratId]
+    );
+    const paidCount = Number(paidRows[0]?.n || 0);
+    const allPaid = paidCount >= nbColoc;
+    if (allPaid && contrat.statut !== 'emis') {
+      await query("UPDATE contrats SET statut = 'emis', date_emission = COALESCE(date_emission, NOW()) WHERE id_contrat = ?", [contratId]);
+    }
+
     return res.status(201).json({
-      message: 'Paiement enregistré. Il sera vérifié par notre équipe.',
+      message: allPaid
+        ? 'Paiement enregistré. Toutes les parts sont réglées : le contrat est validé.'
+        : `Paiement enregistré (${paidCount}/${nbColoc} colocataires). Il sera vérifié par notre équipe.`,
       id_paiement: Number(id_paiement),
       reference,
+      montant: part,
       statut: 'a-verifier',
+      paidCount,
+      total: nbColoc,
+      allPaid,
     });
   } catch (err) {
     next(err);
@@ -787,17 +854,227 @@ async function listByAnnonce(req, res, next) {
   }
 }
 
-module.exports = { 
-  listMine, 
-  listAll, 
-  listByAnnonce,  
+// ===== Generation du vrai document de contrat (gabarit DB + donnees reelles) =====
+function fmtNumber(n) {
+  return String(Number(n) || 0).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+function frDate(value) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch {
+    return String(value);
+  }
+}
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function generateContractDocument(req, res, next) {
+  try {
+    await ensureContractContent();
+    const contratId = Number(req.params.id);
+    if (!Number.isInteger(contratId) || contratId <= 0) {
+      return res.status(400).json({ message: 'Contrat invalide.' });
+    }
+
+    const rows = await query(
+      `SELECT c.*, a.id_utilisateur AS owner_id, a.titre, a.type_propriete, a.surface_totale,
+              a.adresse_exacte, a.quartier, v.nom_ville,
+              ch.prix_loyer, ch.prix_charges, ch.montant_garantie, ch.date_disponibilite
+       FROM contrats c
+       JOIN annonces a ON a.id_annonce = c.id_annonce
+       JOIN villes v ON v.id_ville = a.id_ville
+       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+       WHERE c.id_contrat = ? LIMIT 1`,
+      [contratId]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Contrat introuvable.' });
+    const c = rows[0];
+
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    const parties = await query('SELECT id_utilisateur, nom_complet, role FROM parties_contrats WHERE id_contrat = ? ORDER BY role, id', [contratId]);
+    // Le proprietaire, les colocataires (parties du contrat) et le staff peuvent lire le document.
+    const isParty = parties.some((p) => Number(p.id_utilisateur) === currentUserId);
+    const canView = currentUserId === Number(c.owner_id) || isStaff || isParty;
+    if (!canView) return res.status(403).json({ message: 'Accès refusé à ce document.' });
+    const clauseRows = await query('SELECT titre, description FROM contrat_clauses WHERE est_actif = 1 ORDER BY ordre, id_clause');
+
+    const owner = parties.find((p) => /proprio|propriet/i.test(p.role || ''));
+    const colocs = parties.filter((p) => !/proprio|propriet/i.test(p.role || ''));
+    const adresse = [c.adresse_exacte, c.quartier, c.nom_ville].filter(Boolean).join(', ') || c.nom_ville || '—';
+    const solidPhrase = c.clause_solidarite === 'sans'
+      ? "Sans clause de solidarité : chaque colocataire n'est responsable que de sa propre part."
+      : "Avec clause de solidarité : en cas de défaut de l'un des colocataires, les autres sont redevables de l'ensemble du loyer.";
+
+    const clausesHtml = clauseRows.length
+      ? '<ul>' + clauseRows.map((cl) => `<li><b>${escapeHtml(cl.titre)}</b> — ${escapeHtml(cl.description || '')}</li>`).join('') + '</ul>'
+      : '';
+    const signaturesHtml = parties
+      .map((p) => `<div class="sig"><div class="who">${escapeHtml(p.nom_complet || 'Partie')} <span class="role">(${escapeHtml(p.role || '')})</span></div><div class="line">Signature : ______________________</div></div>`)
+      .join('');
+
+    const vars = {
+      reference: escapeHtml(c.reference || `#${contratId}`),
+      ville: escapeHtml(c.nom_ville || ''),
+      today: frDate(new Date()),
+      proprietaire: escapeHtml(owner?.nom_complet || '—'),
+      colocataires: escapeHtml(colocs.map((p) => p.nom_complet).filter(Boolean).join(', ') || '—'),
+      adresse: escapeHtml(adresse),
+      type_bien: escapeHtml([c.type_propriete, c.surface_totale ? `${c.surface_totale} m²` : null].filter(Boolean).join(' · ')),
+      date_entree: frDate(c.date_disponibilite),
+      type_bail: escapeHtml(c.type_bail === 'collectif' ? 'Bail collectif' : c.type_bail === 'individuel' ? 'Bail individuel' : '—'),
+      solidarite_phrase: escapeHtml(solidPhrase),
+      loyer: fmtNumber(c.prix_loyer),
+      charges: fmtNumber(c.prix_charges),
+      caution: fmtNumber(c.montant_garantie || c.prix_loyer),
+      clauses_list: clausesHtml, // deja du HTML
+      signatures: signaturesHtml, // deja du HTML
+    };
+
+    const templateKey = c.type === 'edl' ? 'CONTRACT_EDL_TEMPLATE' : 'CONTRACT_DOCUMENT_TEMPLATE';
+    let template = await getConfigValue(templateKey, '');
+    if (!template || typeof template !== 'string') {
+      template = c.type === 'edl' ? '<h1>État des lieux</h1>{signatures}' : '<h1>Contrat de colocation</h1>{clauses_list}{signatures}';
+    }
+
+    const bodyHtml = template.replace(/\{(\w+)\}/g, (m, key) =>
+      Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : m
+    );
+
+    const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<title>${c.type === 'edl' ? 'État des lieux' : 'Contrat'} ${vars.reference}</title>
+<style>
+  @page { margin: 24mm; }
+  body { font-family: Arial, sans-serif; color: #1a1a1a; max-width: 800px; margin: 24px auto; padding: 0 24px; line-height: 1.55; }
+  h1 { font-size: 22px; text-align: center; margin: 0 0 4px; }
+  .ref { text-align: center; color: #666; font-size: 12px; margin: 0 0 22px; }
+  h2 { font-size: 15px; border-bottom: 2px solid #85cbd6; padding-bottom: 4px; margin: 22px 0 8px; }
+  p { margin: 6px 0; font-size: 13.5px; }
+  ul { margin: 6px 0; padding-left: 20px; font-size: 13.5px; }
+  li { margin: 3px 0; }
+  .sig { display: inline-block; width: 46%; margin: 18px 2% 0 0; vertical-align: top; }
+  .sig .who { font-weight: bold; font-size: 13px; }
+  .sig .role { font-weight: normal; color: #666; }
+  .sig .line { margin-top: 26px; color: #444; font-size: 12.5px; }
+  .print { text-align: center; margin: 26px 0; }
+  .print button { background: #85cbd6; color: #063; border: none; border-radius: 8px; padding: 10px 18px; font-weight: bold; cursor: pointer; }
+  @media print { .print { display: none; } }
+</style></head>
+<body>
+${bodyHtml}
+<div class="print"><button onclick="window.print()">Imprimer / Enregistrer en PDF</button></div>
+</body></html>`;
+
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Contrats d'une annonce vus par un colocataire (ou l'owner/staff) : sa part + s'il a paye.
+async function myContractsForAnnonce(req, res, next) {
+  try {
+    const annonceId = Number(req.params.id);
+    if (!Number.isInteger(annonceId) || annonceId <= 0) {
+      return res.status(400).json({ message: 'Annonce invalide.' });
+    }
+    const arows = await query('SELECT id_utilisateur AS owner_id, total_colocataires FROM annonces WHERE id_annonce = ? LIMIT 1', [annonceId]);
+    if (!arows.length) return res.status(404).json({ message: 'Annonce introuvable.' });
+    const ownerId = Number(arows[0].owner_id);
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+
+    const contrats = await query('SELECT id_contrat, reference, type, montant_total FROM contrats WHERE id_annonce = ? ORDER BY id_contrat', [annonceId]);
+    const result = [];
+    for (const c of contrats) {
+      const parties = await query("SELECT id_utilisateur, role FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL", [c.id_contrat]);
+      const colocIds = parties.filter((p) => /coloc/i.test(p.role || '')).map((p) => Number(p.id_utilisateur));
+      const isColoc = colocIds.includes(currentUserId);
+      if (!isColoc && currentUserId !== ownerId && !isStaff) continue;
+      const nb = Math.max(1, colocIds.length || Number(arows[0].total_colocataires) || 1);
+      const part = Math.ceil(Number(c.montant_total || 0) / nb);
+      const paidRows = await query("SELECT DISTINCT id_utilisateur FROM paiements WHERE id_contrat = ? AND service_type = 'contrat'", [c.id_contrat]);
+      const payerIds = paidRows.map((r) => Number(r.id_utilisateur));
+      result.push({
+        id_contrat: c.id_contrat,
+        reference: c.reference,
+        type: c.type,
+        montant_total: Number(c.montant_total || 0),
+        ma_part: part,
+        deja_paye: payerIds.includes(currentUserId),
+        paidCount: payerIds.length,
+        total: nb,
+        peut_payer: isColoc,
+      });
+    }
+    return res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Lancement OFFICIEL de la colocation par le deposant, une fois que TOUS les
+// colocataires ont regle leur part de chaque contrat.
+async function lancerColocationOfficielle(req, res, next) {
+  try {
+    const annonceId = Number(req.params.id);
+    if (!Number.isInteger(annonceId) || annonceId <= 0) {
+      return res.status(400).json({ message: 'Annonce invalide.' });
+    }
+    const arows = await query('SELECT id_utilisateur AS owner_id, statut FROM annonces WHERE id_annonce = ? LIMIT 1', [annonceId]);
+    if (!arows.length) return res.status(404).json({ message: 'Annonce introuvable.' });
+    const ownerId = Number(arows[0].owner_id);
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
+    const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
+    const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
+    if (currentUserId !== ownerId && !isStaff) {
+      return res.status(403).json({ message: 'Seul le déposant peut lancer officiellement la colocation.' });
+    }
+    if (arows[0].statut === 'terminee') {
+      return res.status(409).json({ message: 'La colocation est déjà lancée officiellement.' });
+    }
+
+    const contrats = await query('SELECT id_contrat FROM contrats WHERE id_annonce = ?', [annonceId]);
+    if (!contrats.length) {
+      return res.status(400).json({ message: "Aucun contrat n'a encore été créé." });
+    }
+    for (const c of contrats) {
+      const parties = await query("SELECT id_utilisateur, role FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL", [c.id_contrat]);
+      const colocIds = parties.filter((p) => /coloc/i.test(p.role || '')).map((p) => Number(p.id_utilisateur));
+      const paid = await query("SELECT DISTINCT id_utilisateur FROM paiements WHERE id_contrat = ? AND service_type = 'contrat'", [c.id_contrat]);
+      const payerIds = paid.map((r) => Number(r.id_utilisateur));
+      if (!colocIds.every((id) => payerIds.includes(id))) {
+        return res.status(400).json({ message: "Tous les colocataires n'ont pas encore réglé leur part." });
+      }
+    }
+
+    await query("UPDATE annonces SET statut = 'terminee', date_modification = NOW() WHERE id_annonce = ?", [annonceId]);
+    return res.json({ message: 'Colocation lancée officiellement ! L\'annonce est clôturée.', statut: 'terminee' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  listMine,
+  listAll,
+  listByAnnonce,
   checkUserApplied,
-  create, 
-  updateMine, 
+  create,
+  updateMine,
   updateStatus,
   remove,
   decide,
   launchColocation,
   createContracts,
   submitContractPayment,
+  generateContractDocument,
+  myContractsForAnnonce,
+  lancerColocationOfficielle,
 };
