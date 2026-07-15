@@ -220,6 +220,8 @@ async function create(req, res, next) {
       mode_annonce = 'complete',
       type_annonce = 'existante',
       type_propriete = 'appartement',
+      type_bail = null,
+      clause_solidarite = null,
       total_colocataires = null,
       surface_totale = null,
       adresse_exacte = null,
@@ -248,9 +250,9 @@ async function create(req, res, next) {
       `
       INSERT INTO annonces
       (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
-       type_propriete, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
+       type_propriete, type_bail, clause_solidarite, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
        longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         req.user.id,
@@ -261,6 +263,8 @@ async function create(req, res, next) {
         mode_annonce,
         type_annonce,
         type_propriete,
+        type_bail,
+        clause_solidarite,
         total_colocataires,
         surface_totale,
         adresse_exacte,
@@ -325,7 +329,7 @@ async function update(req, res, next) {
   try {
     const allowed = [
       'titre', 'description', 'statut', 'type_bailleur', 'mode_annonce', 'type_annonce',
-      'type_propriete', 'total_colocataires', 'surface_totale', 'adresse_exacte', 'quartier',
+      'type_propriete', 'type_bail', 'clause_solidarite', 'total_colocataires', 'surface_totale', 'adresse_exacte', 'quartier',
       'id_ville', 'latitude', 'longitude', 'internet', 'parking_voitures', 'parking_motos',
       'parking_couvert', 'services_communs', 'date_publication', 'date_expiration', 'booster'
     ];

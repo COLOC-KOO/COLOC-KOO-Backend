@@ -10,6 +10,9 @@ router.post('/:id/decision', requireAuth, controller.decide);
 router.post('/annonce/:id/launch', requireAuth, controller.launchColocation);
 router.post('/annonce/:id/contrats', requireAuth, controller.createContracts);
 router.post('/contrats/:id/paiement', requireAuth, controller.submitContractPayment);
+router.get('/contrats/:id/document', requireAuth, controller.generateContractDocument);
+router.get('/annonce/:id/mes-contrats', requireAuth, controller.myContractsForAnnonce);
+router.post('/annonce/:id/lancer-officiel', requireAuth, controller.lancerColocationOfficielle);
 router.get('/admin/all', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.listAll);
 router.patch('/:id/status', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.updateStatus);
 
