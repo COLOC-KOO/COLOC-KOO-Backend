@@ -114,31 +114,46 @@ async function updateMe(req, res, next) {
     const pairs = [];
     const values = [];
 
-    if (req.body.date_naissance !== undefined) {
-      const birthDate = req.body.date_naissance ? new Date(req.body.date_naissance) : null;
-      const age = birthDate && !Number.isNaN(birthDate.getTime())
-        ? computeAge(birthDate)
-        : null;
+    const body = req.body || {};
+
+    if (body.date_naissance !== undefined) {
+      const rawValue = body.date_naissance;
+      let birthDate = null;
+      if (typeof rawValue === 'string' && rawValue.trim()) {
+        const parsed = new Date(rawValue);
+        if (!Number.isNaN(parsed.getTime())) {
+          birthDate = parsed;
+        }
+      } else if (rawValue instanceof Date) {
+        birthDate = rawValue;
+      }
+      const age = birthDate ? computeAge(birthDate) : null;
       pairs.push('date_naissance = ?');
       values.push(birthDate ? birthDate.toISOString().slice(0, 10) : null);
       pairs.push('age = ?');
       values.push(age);
     }
 
-    if (req.body.ville_actuelle !== undefined) {
+    if (body.ville_actuelle !== undefined) {
       pairs.push('ville_actuelle = ?');
-      values.push(await resolveCityId(req.body.ville_actuelle));
+      values.push(await resolveCityId(body.ville_actuelle));
     }
 
-    if (req.body.ville_origine !== undefined) {
+    if (body.ville_origine !== undefined) {
       pairs.push('ville_origine = ?');
-      values.push(await resolveCityId(req.body.ville_origine));
+      values.push(await resolveCityId(body.ville_origine));
     }
 
     for (const key of allowed) {
-      if (req.body[key] !== undefined) {
-        pairs.push(`${key} = ?`);
-        values.push(req.body[key]);
+      if (body[key] !== undefined) {
+        const value = body[key];
+        if (value === null || value === '') {
+          pairs.push(`${key} = ?`);
+          values.push(null);
+        } else {
+          pairs.push(`${key} = ?`);
+          values.push(value);
+        }
       }
     }
 
@@ -151,7 +166,8 @@ async function updateMe(req, res, next) {
     const user = await getUserById(req.user.id);
     res.json(user);
   } catch (err) {
-    next(err);
+    console.error('updateMe error', err);
+    res.status(500).json({ message: 'Impossible de mettre à jour le profil.' });
   }
 }
 
@@ -166,12 +182,29 @@ async function resolveCityId(cityValue) {
 
 function computeAge(birthDate) {
   const today = new Date();
-  let age = today.getFullYear() - birthDate.getFullYear();
-  const monthDiff = today.getMonth() - birthDate.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+  const birth = new Date(birthDate);
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+  const dayDiff = today.getDate() - birth.getDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
     age -= 1;
   }
   return Math.max(0, age);
+}
+
+async function uploadProfilePicture(req, res, next) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Aucune image reçue.' });
+    }
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const profilePicture = `${baseUrl}/uploads/${req.file.filename}`;
+    await query('UPDATE utilisateurs SET profile_picture = ? WHERE id_utilisateur = ?', [profilePicture, req.user.id]);
+    const user = await getUserById(req.user.id);
+    res.status(201).json({ profilePicture, user });
+  } catch (err) {
+    next(err);
+  }
 }
 
 async function changePassword(req, res, next) {
@@ -201,9 +234,13 @@ async function changePassword(req, res, next) {
 
 async function getUserById(id) {
   const rows = await query(
-    `SELECT u.*, r.nom_role
+    `SELECT u.*, r.nom_role,
+            v_act.nom_ville AS ville_actuelle_nom,
+            v_orig.nom_ville AS ville_origine_nom
      FROM utilisateurs u
      JOIN roles r ON r.id_role = u.id_role
+     LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+     LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
      WHERE u.id_utilisateur = ?
      LIMIT 1`,
     [id]
@@ -215,4 +252,4 @@ async function getUserById(id) {
   return mapUserRow(rows[0]);
 }
 
-module.exports = { register, login, me, updateMe, changePassword };
+module.exports = { register, login, me, updateMe, uploadProfilePicture, changePassword };
