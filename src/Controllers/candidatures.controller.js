@@ -810,10 +810,13 @@ async function listByAnnonce(req, res, next) {
     const rows = await query(
       `
       SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
-             u.id_utilisateur as utilisateur_id, u.nom, u.prenom, u.email, u.telephone,
+             u.id_utilisateur as utilisateur_id, u.nom, u.prenom, u.email, u.telephone, u.profession, u.age, u.bio,
+             u.date_naissance, u.profile_picture, v_act.nom_ville AS ville_actuelle, v_orig.nom_ville AS ville_origine,
              a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer
       FROM candidatures c
       LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+      LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+      LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       WHERE c.id_annonce = ?
