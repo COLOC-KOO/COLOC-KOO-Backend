@@ -12,5 +12,7 @@ router.use('/contact', require('./contact.routes'));
 router.use('/notifications', require('./notifications.routes'));
 router.use('/messages', require('./messages.routes'));
 router.use('/backoffice', require('./backoffice.routes'));
+router.use('/equipes', require('./equipes.routes'));
+router.use('/demandes-service', require('./demandesService.routes'));
 
 module.exports = router;
