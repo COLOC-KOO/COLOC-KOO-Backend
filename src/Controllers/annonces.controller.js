@@ -536,4 +536,3 @@ async function getByIdInternal(id) {
 }
 
 module.exports = { list, getById, uploadPhotos, create, update, updateStatus, remove };
-
