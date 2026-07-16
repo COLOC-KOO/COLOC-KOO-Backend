@@ -707,78 +707,113 @@ function parseMaybeJson(value) {
 
 async function statistiquesColocation(req, res, next) {
   try {
+    console.log('📊 Génération des statistiques de colocation...');
+
+    // Récupérer toutes les annonces avec leurs informations
     const rows = await query(`
-      SELECT a.id_annonce,
-             a.date_creation,
-             a.quartier,
-             a.type_propriete,
-             a.type_annonce,
-             a.total_colocataires,
-             a.surface_totale,
-             a.internet,
-             a.parking_voitures,
-             a.parking_motos,
-             a.parking_couvert,
-             a.services_communs,
-             ch.surface AS chambre_surface,
-             ch.est_meuble,
-             ch.prix_loyer,
-             ch.prix_charges,
-             ch.date_disponibilite,
-             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS commodites,
-             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS regles
+      SELECT 
+        a.id_annonce,
+        a.type_propriete,
+        a.total_colocataires,
+        a.surface_totale,
+        a.quartier,
+        a.internet,
+        a.parking_voitures,
+        a.parking_motos,
+        a.services_communs,
+        a.date_creation,
+        a.type_annonce,
+        ch.surface as chambre_surface,
+        ch.prix_loyer,
+        ch.prix_charges,
+        ch.montant_garantie,
+        ch.est_meuble
       FROM annonces a
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
-      LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
-      LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
-      GROUP BY a.id_annonce
+      WHERE a.statut IN ('active', 'pending', 'en_attente')
       ORDER BY a.date_creation DESC
+      LIMIT 1000
     `);
 
-    const items = rows.map((row) => {
-      const commodites = String(row.commodites || '')
-        .split('||')
-        .map((value) => value.trim())
-        .filter(Boolean);
-      const regles = String(row.regles || '')
-        .split('||')
-        .map((value) => value.trim())
-        .filter(Boolean);
-      const servicesCommuns = parseMaybeJson(row.services_communs);
-      const loyer = Number(row.prix_loyer || 0);
-      const charges = Number(row.prix_charges || 0);
-      const type = String(row.type_propriete || 'autre').toLowerCase();
-      const typeLabel = type === 'maison' ? 'Maison' : type === 'appartement' ? 'Appartement' : 'Autre';
-      const annonceLabel = String(row.type_annonce || 'existante').toLowerCase() === 'creation' ? 'Création' : 'Colocation existante';
-      const rulesText = [...regles, ...servicesCommuns].filter(Boolean);
+    console.log(`📊 ${rows.length} annonces récupérées`);
+
+    // Transformer les données pour le frontend
+    const items = rows.map(row => {
+      let services = [];
+      try {
+        if (row.services_communs) {
+          services = typeof row.services_communs === 'string' 
+            ? JSON.parse(row.services_communs) 
+            : row.services_communs;
+        }
+      } catch (e) {
+        services = [];
+      }
+
+      // ✅ CORRECTION : Formater la date correctement
+      let dateStr = '';
+      if (row.date_creation) {
+        if (typeof row.date_creation === 'string') {
+          dateStr = row.date_creation.split('T')[0];
+        } else if (row.date_creation instanceof Date) {
+          dateStr = row.date_creation.toISOString().split('T')[0];
+        } else {
+          // Si c'est un objet MySQL, le convertir en chaîne
+          dateStr = String(row.date_creation).split('T')[0];
+        }
+      }
+
+      const typeMap = {
+        'appartement': 'Appartement',
+        'maison': 'Maison',
+        'autre': 'Autre'
+      };
+
+      const annonceMap = {
+        'existante': 'Colocation existante',
+        'creation': 'Création'
+      };
+
+      const meubleMap = {
+        'Oui': 'Oui',
+        'Partiellement': 'Partiellement',
+        'Non': 'Non',
+        'Rachat': 'Rachat'
+      };
 
       return {
-        id: String(row.id_annonce),
-        date: row.date_creation ? String(row.date_creation).slice(0, 10) : '',
+        id: String(row.id_annonce || ''),
+        date: dateStr,
         quartier: row.quartier || 'Non renseigné',
-        type: typeLabel,
-        annonce: annonceLabel,
-        nbColocs: Number(row.total_colocataires || 0),
-        surface: Number(row.surface_totale || 0),
-        surfChambre: Number(row.chambre_surface || 0),
-        loyer: loyer || 0,
-        charges: charges || 0,
-        caution: loyer || 0,
-        meuble: row.est_meuble || 'Non',
+        type: typeMap[row.type_propriete] || 'Autre',
+        annonce: annonceMap[row.type_annonce] || 'Colocation existante',
+        nbColocs: row.total_colocataires || 2,
+        surface: row.surface_totale || 0,
+        surfChambre: row.chambre_surface || 0,
+        loyer: row.prix_loyer || 0,
+        charges: row.prix_charges || 0,
+        caution: row.montant_garantie || row.prix_loyer || 0,
+        meuble: meubleMap[row.est_meuble] || 'Non',
         internet: row.internet || 'Aucune',
-        parkingVoit: Number(row.parking_voitures || 0),
-        parking2r: Number(row.parking_motos || 0),
-        commod: commodites,
-        svck: servicesCommuns.length ? servicesCommuns : rulesText.filter((value) => /service|gardien|ménage|jardinier|intendance|eau|parking/i.test(String(value))),
-        filles: rulesText.some((value) => /fille|filles|girls/i.test(String(value))),
-        garcons: rulesText.some((value) => /garcon|garcons|boys/i.test(String(value))),
-        animaux: rulesText.some((value) => /animal|animaux|chien|chat|chien|chat/i.test(String(value))),
-        fumeurs: rulesText.some((value) => /fumeur|fume|non-fumeur/i.test(String(value))),
+        parkingVoit: row.parking_voitures || 0,
+        parking2r: row.parking_motos || 0,
+        commod: services.length > 0 ? services : ['Eau courante', 'Électricité'],
+        svck: [],
+        filles: false,
+        garcons: false,
+        animaux: false,
+        fumeurs: false
       };
     });
 
-    res.json({ items, generatedAt: new Date().toISOString(), total: items.length });
+    res.json({
+      items,
+      total: items.length,
+      generatedAt: new Date().toISOString()
+    });
+
   } catch (err) {
+    console.error('❌ Erreur statistiquesColocation:', err);
     next(err);
   }
 }
