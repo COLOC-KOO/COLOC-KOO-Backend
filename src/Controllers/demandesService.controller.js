@@ -1,4 +1,5 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const notify = require('../Services/notify.service');
 
 // ============================================================================
 //  Demandes de service — autres services Coloc'KOO (cle_service = 'service_%')
@@ -29,7 +30,8 @@ async function ensureTable() {
 }
 
 // Prévient le staff (admin + super_admin actifs) qu'une demande de service arrive.
-// Best-effort : on n'échoue pas la demande si la notif ne part pas.
+// Compose seulement le CONTENU ; l'envoi (in-app + email) est delegue a
+// notify.service. Best-effort : n'echoue jamais la demande appelante.
 async function notifyStaff(userId, lignes, reference, total) {
   try {
     const [demandeur] = await query(
@@ -44,22 +46,21 @@ async function notifyStaff(userId, lignes, reference, total) {
     );
     const listeServices = noms.map((s) => s.nom).join(', ');
 
-    const staff = await query(
-      `SELECT u.id_utilisateur
-       FROM utilisateurs u
-       JOIN roles r ON r.id_role = u.id_role
-       WHERE r.nom_role IN ('admin', 'super_admin') AND u.statut = 'active'`
-    );
-
     const titre = 'Nouvelle demande de service';
     const texte = `${nomComplet} demande : ${listeServices} (réf. ${reference}, total estimé ${total} Ar).`;
-    for (const s of staff) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'systeme', ?, ?, ?)`,
-        [s.id_utilisateur, titre, texte, '/admin/suivi-missions']
-      ).catch(() => {});
-    }
+
+    await notify.notifyStaff({
+      titre,
+      texte,
+      lien: '/admin/services-colockoo',
+      intro: `<strong>${nomComplet}</strong> vient de soumettre une demande de service.`,
+      details: [
+        ['Référence', `<strong>${reference}</strong>`],
+        ['Services', listeServices],
+        ['Total estimé', `<strong>${total} Ar</strong>`],
+      ],
+      action: { label: 'Voir les demandes de services', path: '/admin/services-colockoo' },
+    });
   } catch {
     /* notif best-effort */
   }
