@@ -1,5 +1,6 @@
 const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
+const notify = require('../Services/notify.service');
 
 async function list(req, res, next) {
   try {
@@ -319,6 +320,33 @@ async function create(req, res, next) {
     }
 
     const created = await getByIdInternal(annonceId);
+
+    // Notifie le staff de moderation (moderateurs + admins + super-admins) :
+    // une nouvelle annonce est en attente de validation. Best-effort : n'echoue
+    // jamais le depot de l'annonce.
+    try {
+      const [dep] = await query(
+        'SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
+        [req.user.id]
+      );
+      const nomDeposant = dep ? `${dep.prenom || ''} ${dep.nom || ''}`.trim() : `#${req.user.id}`;
+      await notify.notifyStaff({
+        titre: 'Nouvelle annonce à valider',
+        texte: `${nomDeposant} a déposé l'annonce « ${titre} » (réf. ${ref}). En attente de validation.`,
+        lien: '/admin/annonces',
+        roles: ['moderator', 'admin', 'super_admin'],
+        intro: `<strong>${nomDeposant}</strong> a déposé une nouvelle annonce, en attente de validation.`,
+        details: [
+          ['Référence', `<strong>${ref}</strong>`],
+          ['Titre', titre],
+          ['Type de bien', type_propriete],
+        ],
+        action: { label: 'Ouvrir la file de validation', path: '/admin/annonces' },
+      });
+    } catch {
+      /* notif best-effort */
+    }
+
     res.status(201).json(created);
   } catch (err) {
     next(err);
