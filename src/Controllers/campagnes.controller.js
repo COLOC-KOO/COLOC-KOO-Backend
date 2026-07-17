@@ -2,6 +2,41 @@ const { query, insertAndGetId } = require('../Services/db.service');
 const path = require('path');
 const fs = require('fs');
 
+// Récupérer les campagnes publiques liées aux partenaires
+async function listPublic(req, res, next) {
+  try {
+    const rows = await query(`
+      SELECT
+        c.id_campagne,
+        c.id_partenaire,
+        c.titre,
+        c.description,
+        c.emplacement,
+        c.visuel,
+        c.date_debut,
+        c.date_fin,
+        c.statut,
+        c.date_creation,
+        p.nom AS partenaire_nom,
+        p.secteur,
+        p.niveau,
+        p.remise,
+        p.engagement,
+        p.logo,
+        p.actif
+      FROM campagnes c
+      LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
+      WHERE COALESCE(c.statut, 'active') = 'active'
+        AND COALESCE(p.actif, 1) = 1
+      ORDER BY c.date_creation DESC, c.date_debut DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('❌ Erreur listPublic campagnes:', err);
+    next(err);
+  }
+}
+
 // Récupérer toutes les campagnes
 async function listAll(req, res, next) {
   try {
@@ -280,6 +315,7 @@ async function uploadVisuel(req, res, next) {
 }
 
 module.exports = {
+  listPublic,
   listAll,
   getOne,
   create,
