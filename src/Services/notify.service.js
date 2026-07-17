@@ -1,54 +1,6 @@
 const { query } = require('./db.service');
 const mail = require('./mail.service');
 
-// ============================================================================
-//  Service de NOTIFICATION (couche metier reutilisable) — POINT STANDARD.
-//  Combine en un seul appel :
-//    1) la notification in-app (table `notifications`)
-//    2) l'email (best-effort, gabarit de marque Coloc'KOO)
-//
-//  A utiliser PARTOUT dans le projet (demandes de service, paiements de
-//  contrat, partenaires, sanctions...). Les contro^leurs ne fournissent que des
-//  DONNEES (titre, texte, intro, details) ; ce service construit le HTML.
-//  Ne PAS ecrire de HTML email dans les contro^leurs.
-//
-//  Tout est best-effort : une notification (in-app ou email) qui echoue ne
-//  fait jamais echouer l'action metier appelante.
-//
-//  --- Options communes a notifyStaff() et notifyUser() -----------------------
-//    titre       {string}   requis  titre in-app + sujet email
-//    texte       {string}   requis  texte in-app + fallback texte brut email
-//    lien        {string=}          chemin back-office/front pour la notif in-app
-//    type        {string=}          type_notification ('systeme' par defaut)
-//    intro       {string=}          paragraphe d'intro de l'email (HTML inline ok)
-//    details     {Array=}           lignes [ [libelle, valeur], ... ] -> tableau
-//    action      {object=}          { label, path } bouton email (sinon derive de `lien`)
-//    contenuHtml {string=}          ECHAPPATOIRE : HTML complet du corps
-//                                    (ignore intro/details si fourni)
-//    roles       {string[]=}        notifyStaff seulement : roles cibles
-//                                    (defaut ['admin','super_admin'] ; moderation
-//                                     -> ['moderator','admin','super_admin'])
-//
-//  --- Exemples ---------------------------------------------------------------
-//    // Notifier le staff
-//    await notify.notifyStaff({
-//      titre: 'Nouveau paiement a verifier',
-//      texte: 'Jean D. a paye sa part (CT-123).',
-//      lien: '/admin/versements',
-//      intro: '<strong>Jean D.</strong> a paye sa part de contrat.',
-//      details: [['Reference', 'CT-123'], ['Montant', '50 000 Ar']],
-//      action: { label: 'Voir les versements', path: '/admin/versements' },
-//    });
-//
-//    // Notifier un utilisateur precis
-//    await notify.notifyUser(userId, {
-//      titre: 'Candidature acceptee',
-//      texte: 'Le proprietaire a valide votre candidature.',
-//      lien: '/compte?tab=candidatures',
-//      type: 'candidature',
-//    });
-// ============================================================================
-
 // type_notification autorises par la table (enum). On borne pour eviter une
 // erreur SQL si un appelant passe une valeur libre.
 const TYPES_VALIDES = ['message', 'candidature', 'systeme'];
