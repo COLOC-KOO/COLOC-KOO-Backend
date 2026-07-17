@@ -192,11 +192,13 @@ async function members(req, res, next) {
     const rows = await query(
       `SELECT u.*, r.nom_role,
               COUNT(DISTINCT a.id_annonce) AS annonces_count,
-              COUNT(DISTINCT c.id_candidature) AS candidatures_count
+              COUNT(DISTINCT c.id_candidature) AS candidatures_count,
+              COUNT(DISTINCT s.id_signalement) AS signalements_count
        FROM utilisateurs u
        JOIN roles r ON r.id_role = u.id_role
        LEFT JOIN annonces a ON a.id_utilisateur = u.id_utilisateur
        LEFT JOIN candidatures c ON c.id_utilisateur = u.id_utilisateur
+       LEFT JOIN signalements s ON s.id_utilisateur_cible = u.id_utilisateur
        ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
        GROUP BY u.id_utilisateur
        ORDER BY u.date_inscription DESC
@@ -207,6 +209,7 @@ async function members(req, res, next) {
       ...mapUserRow(row),
       annoncesCount: Number(row.annonces_count || 0),
       candidaturesCount: Number(row.candidatures_count || 0),
+      signalementsCount: Number(row.signalements_count || 0),
     })));
   } catch (err) {
     next(err);
