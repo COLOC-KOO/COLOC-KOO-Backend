@@ -818,6 +818,26 @@ async function statistiquesColocation(req, res, next) {
   }
 }
 
+async function updatePartenaireRequest(req, res, next) {
+  try {
+    const { statut } = req.body || {};
+    const allowedStatuses = ['en_attente', 'acceptee', 'refusee'];
+    if (statut !== undefined && !allowedStatuses.includes(statut)) {
+      return res.status(400).json({ message: 'Statut invalide.' });
+    }
+
+    if (statut === undefined) {
+      return res.status(400).json({ message: 'Aucune modification fournie.' });
+    }
+
+    await query('UPDATE demandes_partenaires SET statut = ? WHERE id_demande = ?', [statut, req.params.id]);
+    await logAction(req, 'Correction', 'demande_partenaire', req.params.id, { operation: 'mise_a_jour', statut });
+    res.json({ message: 'Demande de partenariat mise a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function deletePartenaireRequest(req, res, next) {
   try {
     await query('DELETE FROM demandes_partenaires WHERE id_demande = ?', [req.params.id]);
@@ -1166,6 +1186,7 @@ module.exports = {
   saveContrat,
   contratAction,
   partenaireRequests,
+  updatePartenaireRequest,
   deletePartenaireRequest,
   statistiquesColocation,
   uploadPartenaireLogo,
