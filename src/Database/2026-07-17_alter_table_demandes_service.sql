@@ -1,0 +1,6 @@
+ALTER TABLE demandes_service
+ADD COLUMN dernier_contact VARCHAR(100),
+ADD COLUMN relance VARCHAR(100),
+ADD COLUMN synthese TEXT,
+ADD COLUMN rdv_date DATETIME,
+ADD COLUMN rdv_note VARCHAR(255);

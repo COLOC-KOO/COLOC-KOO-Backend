@@ -1,21 +1,6 @@
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-// ============================================================================
-//  Service email (SMTP transactionnel, ex. Brevo).
-//  Point d'envoi UNIQUE de l'application : aucun contro^leur ne doit parler
-//  directement a nodemailer (me^me logique que db.service.js).
-//
-//  Ce module fournit :
-//   - sendEmail()      : envoi bas niveau, best-effort (ne jette jamais).
-//   - wrapLayout()     : enrobe un contenu dans le gabarit de marque Coloc'KOO.
-//   - detailsTable()   : tableau "libelle / valeur" homogene.
-//   - actionButton()   : bouton-lien (URL absolue via APP_BASE_URL).
-//
-//  Robustesse : si le SMTP n'est pas configure (SMTP_USER / SMTP_PASS vides)
-//  ou si l'envoi echoue, on NE fait PAS echouer l'action metier appelante.
-// ============================================================================
-
 let transporter = null;
 
 // Couleurs de marque (reutilisees par tous les gabarits).
@@ -100,15 +85,6 @@ function actionButton(label, path) {
     <a href="${href}" style="display:inline-block;background:${BRAND.primaire};color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:bold;font-size:14px">${label}</a>
   </p>`;
 }
-
-// --- Envoi ------------------------------------------------------------------
-
-// Envoie un email. Best-effort : renvoie true si envoye, false sinon,
-// et ne jette JAMAIS (les erreurs sont loggees puis avalees).
-// @param {string|string[]} to  destinataire(s)
-// @param {string} sujet
-// @param {string} html  corps HTML (idealement deja passe par wrapLayout)
-// @param {string} [text] version texte optionnelle (fallback sans HTML)
 async function sendEmail(to, sujet, html, text) {
   if (!isConfigured()) {
     console.warn('[mail] SMTP non configure (SMTP_USER/SMTP_PASS vides) — email ignore:', sujet);
