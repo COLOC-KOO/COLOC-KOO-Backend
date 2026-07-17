@@ -47,6 +47,7 @@ router.patch('/services-ckoo/:id', controller.updateServiceCkoo);
 router.delete('/services-ckoo/:id', controller.deleteServiceCkoo);
 router.get('/partenaires', controller.partenaires);
 router.get('/partenaires/requests', controller.partenaireRequests);
+router.patch('/partenaires/requests/:id', controller.updatePartenaireRequest);
 router.delete('/partenaires/requests/:id', controller.deletePartenaireRequest);
 router.get('/statistiques-colocation', controller.statistiquesColocation);
 router.post('/partenaires/upload', upload.single('logo'), controller.uploadPartenaireLogo);
