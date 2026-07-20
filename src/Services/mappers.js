@@ -4,6 +4,7 @@ function mapUserRow(row) {
     id: row.id_utilisateur,
     email: row.email,
     telephone: row.telephone,
+    cin: row.cin,
     nom: row.nom,
     prenom: row.prenom,
     name: `${row.prenom} ${row.nom}`.trim(),
