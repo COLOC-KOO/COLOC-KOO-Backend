@@ -943,8 +943,21 @@ async function contratDetails(req, res, next) {
   try {
     const rows = await query('SELECT * FROM contrats WHERE id_contrat = ? LIMIT 1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ message: 'Contrat introuvable.' });
-    const parties = await query('SELECT * FROM parties_contrats WHERE id_contrat = ? ORDER BY role, id', [req.params.id]);
-    res.json({ ...rows[0], parties });
+    const parties = await query(
+      `SELECT pc.*, u.cin AS user_cin, u.telephone AS user_telephone, u.email AS user_email
+       FROM parties_contrats pc
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = pc.id_utilisateur
+       WHERE pc.id_contrat = ?
+       ORDER BY pc.role, pc.id`,
+      [req.params.id]
+    );
+    const hydratedParties = parties.map((party) => ({
+      ...party,
+      cin: party.cin || party.user_cin || null,
+      telephone: party.telephone || party.user_telephone || null,
+      email: party.email || party.user_email || null,
+    }));
+    res.json({ ...rows[0], parties: hydratedParties });
   } catch (err) {
     next(err);
   }
@@ -969,10 +982,23 @@ async function saveContrat(req, res, next) {
       );
     }
     for (const partie of parties) {
+      const userRows = partie.id_utilisateur
+        ? await query('SELECT cin, telephone, email FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [partie.id_utilisateur])
+        : [];
+      const user = userRows[0] || {};
       await query(
         `INSERT INTO parties_contrats (id_contrat, id_utilisateur, nom_complet, role, cin, telephone, email, commentaire)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, partie.id_utilisateur || null, partie.nom_complet || null, partie.role || 'locataire', partie.cin || null, partie.telephone || null, partie.email || null, partie.commentaire || null]
+        [
+          id,
+          partie.id_utilisateur || null,
+          partie.nom_complet || null,
+          partie.role || 'locataire',
+          partie.cin || user.cin || null,
+          partie.telephone || user.telephone || null,
+          partie.email || user.email || null,
+          partie.commentaire || null,
+        ]
       );
     }
     await logAction(req, 'Correction', 'contrat', id, { statut });
