@@ -29,6 +29,7 @@ async function register(req, res, next) {
       nom,
       prenom,
       telephone = null,
+      cin = null,
       id_role,
       poste = 'colocataire',
       age = null,
@@ -49,9 +50,9 @@ async function register(req, res, next) {
     const hash = await bcrypt.hash(mot_de_passe, 10);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
-       (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, id_role)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, hash, nom, prenom, age, bio, profession, roleId]
+       (email, telephone, cin, mot_de_passe, nom, prenom, age, bio, profession, id_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [email, telephone, cin, hash, nom, prenom, age, bio, profession, roleId]
     );
 
     const user = await getUserById(id);
@@ -110,7 +111,7 @@ async function me(req, res, next) {
 
 async function updateMe(req, res, next) {
   try {
-    const allowed = ['email', 'nom', 'prenom', 'telephone', 'bio', 'profession', 'profile_picture', 'langue_preferee', 'navigation_light'];
+    const allowed = ['email', 'nom', 'prenom', 'telephone', 'cin', 'bio', 'profession', 'profile_picture', 'langue_preferee', 'navigation_light'];
     const pairs = [];
     const values = [];
 

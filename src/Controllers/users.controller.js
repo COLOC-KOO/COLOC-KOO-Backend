@@ -19,7 +19,7 @@ async function me(req, res, next) {
 
 async function updateMe(req, res, next) {
   try {
-    const allowed = ['nom', 'prenom', 'telephone', 'bio', 'age', 'profession', 'profile_picture', 'ville_actuelle', 'ville_origine', 'langue_preferee', 'navigation_light'];
+    const allowed = ['nom', 'prenom', 'telephone', 'cin', 'bio', 'age', 'profession', 'profile_picture', 'ville_actuelle', 'ville_origine', 'langue_preferee', 'navigation_light'];
     const sets = [];
     const values = [];
     for (const field of allowed) {
