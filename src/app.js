@@ -8,7 +8,7 @@ const corsMiddleware = require('./Middleware/cors.middleware');
 const routes = require('./Routes');
 const { notFound, errorHandler } = require('./Middleware/error.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
-const contratsRoutes = require('./routes/contrats.route');
+const contratsRoutes = require('./Routes/contrats.route');
 
 function createApp() {
   const app = express();
