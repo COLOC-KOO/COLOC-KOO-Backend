@@ -1,5 +1,6 @@
 const { query, insertAndGetId } = require('../Services/db.service');
 const { ensureContractContent } = require('./meta.controller');
+const mail = require('../Services/mail.service');
 
 const PROGRESS_STEPS = [
   { key: 'envoyee', label: 'Envoyee' },
@@ -1022,6 +1023,110 @@ async function myContractsForAnnonce(req, res, next) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatDateFr(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function buildOfficialColocationEmail({ status, candidate, annonce, retainedNames }) {
+  const isRetained = status === 'retained';
+  const candidateName = [candidate.prenom, candidate.nom].filter(Boolean).join(' ').trim()
+    || candidate.email
+    || 'Colocataire';
+  const logementTitre = annonce.titre || `Annonce ${annonce.id_annonce}`;
+  const moveInLabel = formatDateFr(annonce.date_disponibilite) || 'a confirmer';
+  const locationLabel = [annonce.quartier, annonce.ville].filter(Boolean).join(', ');
+  const details = [
+    ['Logement', escapeHtml(logementTitre)],
+    ['Emmenagement', escapeHtml(moveInLabel)],
+    locationLabel ? ['Localisation', escapeHtml(locationLabel)] : null,
+    isRetained && retainedNames.length ? ['Colocataires retenus', escapeHtml(retainedNames.join(', '))] : null,
+  ].filter(Boolean);
+
+  const accent = isRetained ? '#16a34a' : '#ef4444';
+  const soft = isRetained ? '#dcfce7' : '#fee2e2';
+  const title = isRetained
+    ? `Felicitations, ${candidateName} !`
+    : 'Ce ne sera pas cette fois';
+  const message = isRetained
+    ? `${candidateName}, ta candidature est retenue : tu fais partie de la colocation ${logementTitre}. Bienvenue !`
+    : `${candidateName}, ta candidature n'a pas ete retenue pour ${logementTitre}. Une autre equipe est maintenant validee, mais tu peux continuer a chercher une colocation qui te correspond.`;
+
+  const contenuHtml = `
+    <div style="border:1px solid ${soft};background:${soft};border-radius:22px;padding:24px;text-align:center">
+      <div style="display:inline-block;width:64px;height:64px;line-height:64px;border-radius:999px;background:${accent};color:#ffffff;font-size:28px;font-weight:bold;margin:0 auto 14px">
+        ${isRetained ? 'OK' : 'i'}
+      </div>
+      <h1 style="margin:0;font-size:28px;line-height:1.1;color:${mail.BRAND.texte};font-family:Arial,Helvetica,sans-serif">${escapeHtml(title)}</h1>
+      <p style="margin:14px auto 0;max-width:460px;color:${mail.BRAND.gris};font-size:14px;line-height:1.65">
+        ${escapeHtml(message)}
+      </p>
+      <div style="margin-top:22px;border:1px solid ${mail.BRAND.bordure};background:#ffffff;border-radius:18px;padding:16px;text-align:left">
+        ${mail.detailsTable(details)}
+        ${isRetained
+          ? `<p style="margin:12px 0 0;color:${mail.BRAND.gris};font-size:13px">Ta conversation de groupe reste ouverte pour t'organiser.</p>`
+          : `<p style="margin:12px 0 0;color:${mail.BRAND.gris};font-size:13px">Reviens sur la carte pour trouver un logement qui te correspond encore mieux.</p>`}
+      </div>
+      ${mail.actionButton(isRetained ? 'Voir ma notification' : 'Voir les annonces', isRetained ? `/candidatures?annonceId=${annonce.id_annonce}` : '/annonces')}
+    </div>
+  `;
+
+  return {
+    subject: isRetained
+      ? `Coloc'KOO - Ta candidature est retenue pour ${logementTitre}`
+      : `Coloc'KOO - Candidature non retenue pour ${logementTitre}`,
+    html: mail.wrapLayout(isRetained ? 'Colocataire valide' : 'Colocataire non retenu', contenuHtml),
+    text: message,
+  };
+}
+
+async function sendOfficialColocationEmails(annonceId, annonce) {
+  const candidates = await query(
+    `SELECT c.id_candidature, c.id_utilisateur, c.statut, u.nom, u.prenom, u.email
+     FROM candidatures c
+     JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+     WHERE c.id_annonce = ?
+     ORDER BY c.date_creation ASC`,
+    [annonceId]
+  );
+  if (!candidates.length) return { sent: 0, total: 0 };
+
+  const retained = candidates.filter((candidate) => {
+    const status = normalizeStatus(candidate.statut);
+    return status === 'signature' || status === 'convention';
+  });
+  const retainedNames = retained
+    .map((candidate) => [candidate.prenom, candidate.nom].filter(Boolean).join(' ').trim() || candidate.email)
+    .filter(Boolean);
+
+  let sent = 0;
+  for (const candidate of candidates) {
+    if (!candidate.email) continue;
+    const normalized = normalizeStatus(candidate.statut);
+    const status = normalized === 'signature' || normalized === 'convention' ? 'retained' : 'refused';
+    const email = buildOfficialColocationEmail({ status, candidate, annonce, retainedNames });
+    const ok = await mail.sendEmail(candidate.email, email.subject, email.html, email.text);
+    if (ok) sent += 1;
+  }
+
+  return { sent, total: candidates.filter((candidate) => candidate.email).length };
+}
+
 // Lancement OFFICIEL de la colocation par le deposant, une fois que TOUS les
 // colocataires ont regle leur part de chaque contrat.
 async function lancerColocationOfficielle(req, res, next) {
@@ -1030,7 +1135,15 @@ async function lancerColocationOfficielle(req, res, next) {
     if (!Number.isInteger(annonceId) || annonceId <= 0) {
       return res.status(400).json({ message: 'Annonce invalide.' });
     }
-    const arows = await query('SELECT id_utilisateur AS owner_id, statut FROM annonces WHERE id_annonce = ? LIMIT 1', [annonceId]);
+    const arows = await query(
+      `SELECT a.id_annonce, a.id_utilisateur AS owner_id, a.statut, a.titre, a.quartier, v.nom_ville AS ville, ch.date_disponibilite
+       FROM annonces a
+       LEFT JOIN villes v ON v.id_ville = a.id_ville
+       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+       WHERE a.id_annonce = ?
+       LIMIT 1`,
+      [annonceId]
+    );
     if (!arows.length) return res.status(404).json({ message: 'Annonce introuvable.' });
     const ownerId = Number(arows[0].owner_id);
     const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
@@ -1058,7 +1171,17 @@ async function lancerColocationOfficielle(req, res, next) {
     }
 
     await query("UPDATE annonces SET statut = 'terminee', date_modification = NOW() WHERE id_annonce = ?", [annonceId]);
-    return res.json({ message: 'Colocation lancée officiellement ! L\'annonce est clôturée.', statut: 'terminee' });
+    let emailResult = { sent: 0, total: 0 };
+    try {
+      emailResult = await sendOfficialColocationEmails(annonceId, arows[0]);
+    } catch (mailErr) {
+      console.error('[candidatures] Emails lancement officiel:', mailErr.message);
+    }
+    return res.json({
+      message: 'Colocation lancée officiellement ! L\'annonce est clôturée.',
+      statut: 'terminee',
+      emails: emailResult,
+    });
   } catch (err) {
     next(err);
   }
