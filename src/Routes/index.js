@@ -14,5 +14,6 @@ router.use('/messages', require('./messages.routes'));
 router.use('/backoffice', require('./backoffice.routes'));
 router.use('/equipes', require('./equipes.routes'));
 router.use('/demandes-service', require('./demandesService.routes'));
+router.use('/geocode', require('./geocode.routes'));
 
 module.exports = router;
