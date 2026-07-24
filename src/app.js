@@ -77,7 +77,13 @@ function createApp() {
     });
   });
 
+  // expose api routes under /api
   app.use('/api', routes);
+
+  // lightweight geocode health route for quick check
+  app.get('/api/geocode/health', (req, res) => {
+    res.json({ ok: true, source: 'geocode-proxy-ready' });
+  });
 
   app.use(notFound);
   app.use(errorHandler);
