@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
+const mail = require('../Services/mail.service');
 
 const ROLE_ALIASES = {
   superadmin: 'super_admin',
@@ -57,6 +58,24 @@ async function register(req, res, next) {
 
     const user = await getUserById(id);
     const token = signToken(user);
+
+    try {
+      await mail.sendEmail(
+        email,
+        "Bienvenue sur Coloc'KOO",
+        mail.wrapLayout(
+          "Votre compte a ete cree",
+          `
+            <p>Bonjour ${prenom},</p>
+            <p>Votre compte Coloc'KOO est maintenant actif. Vous pouvez chercher une colocation, proposer un logement ou contacter les profils qui vous interessent.</p>
+            ${mail.actionButton('Acceder a mon compte', '/compte')}
+          `
+        ),
+        `Bonjour ${prenom}, votre compte Coloc'KOO a ete cree.`
+      );
+    } catch (error) {
+      console.warn('[auth] Email de bienvenue non envoye:', error.message);
+    }
 
     res.status(201).json({ user, token });
   } catch (err) {

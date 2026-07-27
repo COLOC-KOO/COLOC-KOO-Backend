@@ -114,6 +114,102 @@ async function listAll(req, res, next) {
   }
 }
 
+async function listProfilsParVille(req, res, next) {
+  try {
+    const ville = String(req.query.ville || '').trim();
+    const q = String(req.query.q || '').trim();
+    const profession = String(req.query.profession || '').trim();
+    const maxAge = Number(req.query.maxAge || 0);
+    const months = Math.min(Math.max(Number(req.query.months || 3), 1), 12);
+
+    if (!ville) {
+      return res.status(400).json({ message: 'Ville requise.' });
+    }
+
+    const clauses = [
+      'u.statut = ?',
+      'c.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)',
+      'LOWER(v.nom_ville) LIKE ?',
+    ];
+    const values = ['active', months, `%${ville.toLowerCase()}%`];
+
+    if (q) {
+      clauses.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
+      values.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+    }
+    if (profession) {
+      clauses.push('LOWER(u.profession) LIKE ?');
+      values.push(`%${profession.toLowerCase()}%`);
+    }
+    if (maxAge > 0) {
+      clauses.push('u.age IS NOT NULL AND u.age <= ?');
+      values.push(maxAge);
+    }
+
+    const rows = await query(
+      `
+      SELECT
+        u.id_utilisateur,
+        u.nom,
+        u.prenom,
+        u.email,
+        u.telephone,
+        u.age,
+        u.bio,
+        u.profile_picture,
+        u.profession,
+        u.est_verifie,
+        u.date_inscription,
+        MAX(v_act.nom_ville) AS ville_actuelle_nom,
+        MAX(v_orig.nom_ville) AS ville_origine_nom,
+        MAX(v.nom_ville) AS ville_recherchee,
+        COUNT(DISTINCT c.id_candidature) AS demandes_count,
+        MAX(c.date_creation) AS derniere_demande,
+        GROUP_CONCAT(DISTINCT a.titre ORDER BY c.date_creation DESC SEPARATOR '||') AS annonces_demandees
+      FROM candidatures c
+      JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+      JOIN annonces a ON a.id_annonce = c.id_annonce
+      JOIN villes v ON v.id_ville = a.id_ville
+      LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+      LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
+      WHERE ${clauses.join(' AND ')}
+      GROUP BY u.id_utilisateur
+      ORDER BY derniere_demande DESC
+      LIMIT 200
+      `,
+      values
+    );
+
+    const isAuthenticated = Boolean(req.user);
+    res.json({
+      ville,
+      months,
+      total: rows.length,
+      profiles: rows.map((row) => ({
+        id_utilisateur: row.id_utilisateur,
+        nom: row.nom,
+        prenom: row.prenom,
+        age: row.age,
+        bio: row.bio,
+        profile_picture: row.profile_picture,
+        profession: row.profession,
+        est_verifie: Boolean(row.est_verifie),
+        date_inscription: row.date_inscription,
+        ville_actuelle: row.ville_actuelle_nom,
+        ville_origine: row.ville_origine_nom,
+        ville_recherchee: row.ville_recherchee,
+        demandes_count: Number(row.demandes_count || 0),
+        derniere_demande: row.derniere_demande,
+        annonces_demandees: row.annonces_demandees ? String(row.annonces_demandees).split('||') : [],
+        email: isAuthenticated ? row.email : null,
+        telephone: isAuthenticated ? row.telephone : null,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // async function create(req, res, next) {
 //   try {
 //     const { id_annonce, message, statut = 'envoyee', membres = [] } = req.body;
@@ -1190,6 +1286,7 @@ async function lancerColocationOfficielle(req, res, next) {
 module.exports = {
   listMine,
   listAll,
+  listProfilsParVille,
   listByAnnonce,
   checkUserApplied,
   create,
