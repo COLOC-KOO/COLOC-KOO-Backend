@@ -3,6 +3,7 @@ const controller = require('../Controllers/candidatures.controller');
 const { requireAuth, requireRole, optionalAuth } = require('../Middleware/auth.middleware');
 
 router.get('/', requireAuth, controller.listMine);
+router.get('/profils', optionalAuth, controller.listProfilsParVille);
 router.post('/', requireAuth, controller.create);
 router.patch('/:id', requireAuth, controller.updateMine);
 router.delete('/:id', requireAuth, controller.remove);
