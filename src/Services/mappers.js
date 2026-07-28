@@ -78,6 +78,13 @@ function mapAnnonceRow(row) {
     date_publication: row.date_publication,
     date_expiration: row.date_expiration,
     booster: Boolean(row.booster),
+    energy_class: row.energy_class,
+    ghg_class: row.ghg_class,
+    elevator: Boolean(row.elevator),
+    pets_allowed: Boolean(row.pets_allowed),
+    smokers_allowed: Boolean(row.smokers_allowed),
+    women_only: Boolean(row.women_only),
+    men_only: Boolean(row.men_only),
     auteur: row.auteur_prenom ? `${row.auteur_prenom} ${row.auteur_nom}`.trim() : row.auteur_nom,
     chambre: row.prix_loyer ? {
       surface: row.chambre_surface,
