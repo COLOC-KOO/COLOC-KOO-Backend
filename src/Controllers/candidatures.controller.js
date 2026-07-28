@@ -131,19 +131,31 @@ async function listProfilsParVille(req, res, next) {
       'c.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)',
       'LOWER(v.nom_ville) LIKE ?',
     ];
+    const clausesSaved = [
+      'u.statut = ?',
+      'sr.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)',
+      'LOWER(v.nom_ville) LIKE ?',
+    ];
     const values = ['active', months, `%${ville.toLowerCase()}%`];
+    const valuesSaved = ['active', months, `%${ville.toLowerCase()}%`];
 
     if (q) {
       clauses.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
       values.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+      clausesSaved.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
+      valuesSaved.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
     }
     if (profession) {
       clauses.push('LOWER(u.profession) LIKE ?');
       values.push(`%${profession.toLowerCase()}%`);
+      clausesSaved.push('LOWER(u.profession) LIKE ?');
+      valuesSaved.push(`%${profession.toLowerCase()}%`);
     }
     if (maxAge > 0) {
       clauses.push('u.age IS NOT NULL AND u.age <= ?');
       values.push(maxAge);
+      clausesSaved.push('u.age IS NOT NULL AND u.age <= ?');
+      valuesSaved.push(maxAge);
     }
 
     const rows = await query(
@@ -174,10 +186,39 @@ async function listProfilsParVille(req, res, next) {
       LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
       WHERE ${clauses.join(' AND ')}
       GROUP BY u.id_utilisateur
+
+      UNION
+
+      SELECT
+        u.id_utilisateur,
+        u.nom,
+        u.prenom,
+        u.email,
+        u.telephone,
+        u.age,
+        u.bio,
+        u.profile_picture,
+        u.profession,
+        u.est_verifie,
+        u.date_inscription,
+        MAX(v_act.nom_ville) AS ville_actuelle_nom,
+        MAX(v_orig.nom_ville) AS ville_origine_nom,
+        MAX(v.nom_ville) AS ville_recherchee,
+        0 AS demandes_count,
+        MAX(sr.date_creation) AS derniere_demande,
+        NULL AS annonces_demandees
+      FROM recherches_sauvegardees sr
+      JOIN utilisateurs u ON u.id_utilisateur = sr.id_utilisateur
+      JOIN villes v ON v.id_ville = sr.id_ville
+      LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+      LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
+      WHERE ${clausesSaved.join(' AND ')}
+      GROUP BY u.id_utilisateur
+
       ORDER BY derniere_demande DESC
       LIMIT 200
       `,
-      values
+      [...values, ...valuesSaved]
     );
 
     const isAuthenticated = Boolean(req.user);
