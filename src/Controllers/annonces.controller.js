@@ -213,103 +213,147 @@ async function uploadPhotos(req, res, next) {
 
 async function create(req, res, next) {
   try {
-    const {
-      reference,
-      titre,
-      description = null,
-      type_bailleur = 'membre',
-      mode_annonce = 'complete',
-      type_annonce = 'existante',
-      type_propriete = 'appartement',
-      type_bail = null,
-      clause_solidarite = null,
-      total_colocataires = null,
-      surface_totale = null,
-      adresse_exacte = null,
-      quartier = null,
-      id_ville,
-      latitude = null,
-      longitude = null,
-      internet = null,
-      parking_voitures = 0,
-      parking_motos = 0,
-      parking_couvert = 0,
-      services_communs = null,
-      chambres = null,
-      services = [],
-      regles = [],
-      photos = [],
-    } = req.body;
-    const photoUrls = Array.isArray(photos) ? photos.filter((p) => typeof p === 'string') : [];
+     const {
+       reference,
+       titre,
+       description = null,
+       type_bailleur = 'membre',
+       mode_annonce = 'complete',
+       type_annonce = 'existante',
+       type_propriete = 'appartement',
+       type_bail = null,
+       clause_solidarite = null,
+       total_colocataires = null,
+       surface_totale = null,
+       adresse_exacte = null,
+       quartier = null,
+       id_ville,
+       latitude = null,
+       longitude = null,
+       internet = null,
+       parking_voitures = 0,
+       parking_motos = 0,
+       parking_couvert = 0,
+       services_communs = null,
+       chambres = null,
+       services = [],
+       regles = [],
+       photos = [],
+       amenities = [],
+       rules = [],
+       energy_class = null,
+       ghg_class = null,
+       elevator = false,
+       pets_allowed = false,
+       smokers_allowed = false,
+       women_only = false,
+       men_only = false,
+       rooms = [],
+     } = req.body;
+     const photoUrls = Array.isArray(photos) ? photos.filter((p) => typeof p === 'string') : [];
 
-    if (!titre || !id_ville) {
-      return res.status(400).json({ message: 'Titre et ville requis.' });
-    }
+     if (!titre || !id_ville) {
+       return res.status(400).json({ message: 'Titre et ville requis.' });
+     }
 
-    const ref = reference || `CK-${Date.now().toString().slice(-8)}`;
-    const annonceId = await insertAndGetId(
-      `
-      INSERT INTO annonces
-      (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
-       type_propriete, type_bail, clause_solidarite, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
-       longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs)
-      VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        req.user.id,
-        ref,
-        titre,
-        description,
-        type_bailleur,
-        mode_annonce,
-        type_annonce,
-        type_propriete,
-        type_bail,
-        clause_solidarite,
-        total_colocataires,
-        surface_totale,
-        adresse_exacte,
-        quartier,
-        id_ville,
-        latitude,
-        longitude,
-        internet,
-        parking_voitures,
-        parking_motos,
-        parking_couvert,
-        services_communs ? JSON.stringify(services_communs) : null,
-      ]
-    );
+     const ref = reference || `CK-${Date.now().toString().slice(-8)}`;
+     const annonceId = await insertAndGetId(
+       `
+       INSERT INTO annonces
+       (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
+        type_propriete, type_bail, clause_solidarite, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
+        longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs,
+        energy_class, ghg_class, elevator, pets_allowed, smokers_allowed, women_only, men_only)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?)
+       `,
+       [
+         req.user.id,
+         ref,
+         titre,
+         description,
+         type_bailleur,
+         mode_annonce,
+         type_annonce,
+         type_propriete,
+         type_bail,
+         clause_solidarite,
+         total_colocataires,
+         surface_totale,
+         adresse_exacte,
+         quartier,
+         id_ville,
+         latitude,
+         longitude,
+         internet,
+         parking_voitures,
+         parking_motos,
+         parking_couvert,
+         services_communs ? JSON.stringify(services_communs) : null,
+         energy_class,
+         ghg_class,
+         elevator,
+         pets_allowed,
+         smokers_allowed,
+         women_only,
+         men_only,
+       ]
+     );
 
     if (chambres) {
-      const ch = chambres;
-      await query(
-        `
-        INSERT INTO chambres
-        (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          annonceId,
-          ch.surface || null,
-          ch.est_meuble || null,
-          ch.prix_meubles || null,
-          ch.description_meubles || null,
-          ch.prix_loyer,
-          ch.prix_charges || null,
-          ch.type_garantie || '1mois',
-          ch.montant_garantie || null,
-          ch.date_disponibilite,
-        ]
-      );
-    }
+       const ch = chambres;
+       await query(
+         `
+         INSERT INTO chambres
+         (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         `,
+         [
+           annonceId,
+           ch.surface || null,
+           ch.est_meuble || null,
+           ch.prix_meubles || null,
+           ch.description_meubles || null,
+           ch.prix_loyer,
+           ch.prix_charges || null,
+           ch.type_garantie || '1mois',
+           ch.montant_garantie || null,
+           ch.date_disponibilite,
+         ]
+       );
+     }
 
-    for (const amenity of services) {
-      await query('INSERT INTO equipements_annonces (id_annonce, amenity) VALUES (?, ?)', [annonceId, amenity]);
-    }
-    for (const regle of regles) {
-      await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [annonceId, regle]);
-    }
+     const allAmenities = [...new Set([...services, ...amenities])];
+     for (const amenity of allAmenities) {
+       await query('INSERT INTO equipements_annonces (id_annonce, amenity) VALUES (?, ?)', [annonceId, amenity]);
+     }
+     const allRules = [...new Set([...regles, ...rules])];
+     for (const regle of allRules) {
+       await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [annonceId, regle]);
+     }
+
+     if (Array.isArray(rooms) && rooms.length > 0) {
+       for (const room of rooms) {
+         if (room.surface || room.cost_rent) {
+           await query(
+             `INSERT INTO chambres (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                annonceId,
+                room.surface ? Number(room.surface) : null,
+                null,
+                null,
+                null,
+                room.cost_rent ? Number(room.cost_rent) : null,
+                room.cost_charges ? Number(room.cost_charges) : null,
+                '1mois',
+                null,
+                new Date().toISOString().slice(0, 10),
+              ]
+           );
+         }
+       }
+     }
     for (let i = 0; i < photoUrls.length; i += 1) {
       await query('INSERT INTO photos_annonces (id_annonce, url, est_principale, ordre) VALUES (?, ?, ?, ?)', [
         annonceId,
