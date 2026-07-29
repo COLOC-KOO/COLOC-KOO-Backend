@@ -83,10 +83,12 @@ async function list(req, res, next) {
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+            u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
             v.nom_ville, r.nom_region,
             MIN(ch.surface) AS chambre_surface, 
             MIN(ch.prix_loyer) AS prix_loyer, 
             MIN(ch.date_disponibilite) AS date_disponibilite,
+            COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
             COUNT(DISTINCT c.id_candidature) AS candidature_count,
             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
@@ -160,10 +162,12 @@ async function getById(req, res, next) {
     const rows = await query(
       `
       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+             u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
              v.nom_ville, r.nom_region,
              MIN(ch.surface) AS chambre_surface, 
              MIN(ch.prix_loyer) AS prix_loyer, 
              MIN(ch.date_disponibilite) AS date_disponibilite,
+             COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
              COUNT(DISTINCT c.id_candidature) AS candidature_count,
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
@@ -578,10 +582,12 @@ async function getByIdInternal(id) {
   const rows = await query(
     `
     SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
+           u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
            v.nom_ville, r.nom_region,
            MIN(ch.surface) AS chambre_surface, 
            MIN(ch.prix_loyer) AS prix_loyer, 
            MIN(ch.date_disponibilite) AS date_disponibilite,
+           COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos

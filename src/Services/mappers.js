@@ -86,6 +86,10 @@ function mapAnnonceRow(row) {
     women_only: Boolean(row.women_only),
     men_only: Boolean(row.men_only),
     auteur: row.auteur_prenom ? `${row.auteur_prenom} ${row.auteur_nom}`.trim() : row.auteur_nom,
+    auteur_email: row.auteur_email,
+    auteur_telephone: row.auteur_telephone,
+    auteur_profile_picture: row.auteur_profile_picture,
+    bedrooms_count: row.bedrooms_count != null ? Number(row.bedrooms_count) : undefined,
     chambre: row.prix_loyer ? {
       surface: row.chambre_surface,
       prix_loyer: row.prix_loyer,
