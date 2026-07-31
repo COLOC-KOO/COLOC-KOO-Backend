@@ -3,6 +3,7 @@ dotenv.config();
 
 const { createApp } = require('./app');
 const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
+const { attachRealtime } = require('./Services/realtime.service');
 
 const PORT = process.env.PORT || 4000;
 const app = createApp();
@@ -16,6 +17,7 @@ async function start() {
   const server = app.listen(PORT, () => {
     console.log(`Serveur demarre sur le port ${PORT}`);
   });
+  app.set('realtime', attachRealtime(server));
 
   process.on('unhandledRejection', err => {
     console.error('Erreur non geree:', err);
