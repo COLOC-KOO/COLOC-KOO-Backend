@@ -64,9 +64,21 @@ async function send(req, res, next) {
     await query(
       `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
        VALUES (?, 'message', ?, ?, ?)`,
-      [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/messages/${req.user.id}`]
+      [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/compte?tab=messages&user=${req.user.id}`]
     ).catch(() => {});
-    res.status(201).json({ id_message: id });
+    const [message] = await query(
+      `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
+              de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
+              a.titre AS annonce_titre
+       FROM messages m
+       JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
+       JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
+       LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
+       WHERE m.id_message = ? LIMIT 1`,
+      [id]
+    );
+    req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
+    res.status(201).json(message || { id_message: id });
   } catch (err) {
     next(err);
   }
