@@ -84,6 +84,17 @@ async function ensureBusinessSchema() {
   try {
     const dbPool = await initPool();
     await dbPool.query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'");
+    await dbPool.query(`
+      DELETE c1 FROM candidatures c1
+      JOIN candidatures c2
+        ON c1.id_utilisateur = c2.id_utilisateur
+       AND c1.id_annonce = c2.id_annonce
+       AND c1.id_candidature > c2.id_candidature
+    `).catch(() => {});
+    const [uniqueCandidatures] = await dbPool.query("SHOW INDEX FROM candidatures WHERE Key_name = 'uniq_candidatures_user_annonce'");
+    if (uniqueCandidatures.length === 0) {
+      await dbPool.query('ALTER TABLE candidatures ADD UNIQUE KEY uniq_candidatures_user_annonce (id_utilisateur, id_annonce)');
+    }
     await dbPool.query("ALTER TABLE contrats MODIFY COLUMN statut ENUM('a-emettre','a-planifier','brouillon','emis','envoye','signe','annule') NOT NULL DEFAULT 'a-emettre'");
     await dbPool.query("ALTER TABLE photos_annonces MODIFY COLUMN url LONGTEXT NOT NULL").catch(() => {});
     await dbPool.query(`
