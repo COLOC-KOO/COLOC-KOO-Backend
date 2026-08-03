@@ -43,12 +43,22 @@ async function list(req, res, next) {
       }
     }
     if (ville) {
-      clauses.push('LOWER(v.nom_ville) LIKE ?');
-      values.push(`%${String(ville).toLowerCase()}%`);
+      clauses.push(`(
+        LOWER(v.nom_ville) LIKE ?
+        OR LOWER(COALESCE(a.quartier, '')) LIKE ?
+        OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
+        OR LOWER(COALESCE(a.titre, '')) LIKE ?
+      )`);
+      const placeLike = `%${String(ville).toLowerCase()}%`;
+      values.push(placeLike, placeLike, placeLike, placeLike);
     }
     if (quartier) {
-      clauses.push('LOWER(a.quartier) LIKE ?');
-      values.push(`%${String(quartier).toLowerCase()}%`);
+      clauses.push(`(
+        LOWER(COALESCE(a.quartier, '')) LIKE ?
+        OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
+      )`);
+      const districtLike = `%${String(quartier).toLowerCase()}%`;
+      values.push(districtLike, districtLike);
     }
     if (minPrice) {
       clauses.push('COALESCE(ch.prix_loyer, 0) >= ?');
@@ -59,8 +69,15 @@ async function list(req, res, next) {
       values.push(Number(maxPrice));
     }
     if (q) {
-      clauses.push('(a.titre LIKE ? OR a.description LIKE ? OR v.nom_ville LIKE ? OR a.quartier LIKE ?)');
-      values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+      clauses.push(`(
+        LOWER(COALESCE(a.titre, '')) LIKE ?
+        OR LOWER(COALESCE(a.description, '')) LIKE ?
+        OR LOWER(v.nom_ville) LIKE ?
+        OR LOWER(COALESCE(a.quartier, '')) LIKE ?
+        OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
+      )`);
+      const queryLike = `%${String(q).toLowerCase()}%`;
+      values.push(queryLike, queryLike, queryLike, queryLike, queryLike);
     }
     if (service) {
       const serviceId = Number(service);
