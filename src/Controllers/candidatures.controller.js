@@ -21,6 +21,34 @@ function normalizeStatus(statut) {
   return STATUS_ALIASES[statut] || statut || 'envoyee';
 }
 
+function isDuplicateCandidatureError(err) {
+  return err?.code === 'ER_DUP_ENTRY' && String(err?.message || '').includes('uniq_candidatures_user_annonce');
+}
+
+const ROLE_QUERY_ALIASES = {
+  colocataire: 'coloc',
+  coloc: 'coloc',
+  proprietaire: 'proprio',
+  propriétaire: 'proprio',
+  proprio: 'proprio',
+  agent: 'agent',
+  admin: 'admin',
+  superadmin: 'super_admin',
+  super_admin: 'super_admin',
+  moderator: 'moderator',
+  moderateur: 'moderator',
+  modérateur: 'moderator',
+};
+
+const PUBLIC_ROLE_LABELS = {
+  coloc: 'colocataire',
+  proprio: 'proprietaire',
+  agent: 'agent',
+  admin: 'admin',
+  super_admin: 'super_admin',
+  moderator: 'moderateur',
+};
+
 function mapCandidature(row, membres = []) {
   const normalized = normalizeStatus(row.statut);
   const currentIndex = PROGRESS_STEPS.findIndex(step => step.key === normalized);
@@ -61,6 +89,38 @@ async function ensureEquipeForAnnonce(annonceId, annonceTitre) {
 
   const equipeNom = `Equipe ${annonceTitre || `Annonce ${annonceId}`}`.slice(0, 255);
   return insertAndGetId('INSERT INTO equipes (id_annonce, nom, statut) VALUES (?, ?, ?)', [annonceId, equipeNom, 'forming']);
+}
+
+async function rememberSearchLocation(userId, location) {
+  if (!userId || !location) return;
+  const normalized = String(location).trim();
+  if (!normalized) return;
+
+  const [city] = await query('SELECT id_ville FROM villes WHERE LOWER(nom_ville) = LOWER(?) LIMIT 1', [normalized]).catch(() => []);
+  const cityId = city?.id_ville || null;
+  const existing = await query(
+    `SELECT id FROM recherches_sauvegardees
+     WHERE id_utilisateur = ?
+       AND (
+         (? IS NOT NULL AND id_ville = ?)
+         OR LOWER(COALESCE(quartier, nom, '')) = LOWER(?)
+       )
+     LIMIT 1`,
+    [userId, cityId, cityId, normalized]
+  ).catch(() => []);
+
+  if (existing.length) {
+    await query(
+      'UPDATE recherches_sauvegardees SET nom = ?, id_ville = COALESCE(?, id_ville), quartier = ?, est_actif = 1, date_creation = NOW() WHERE id = ?',
+      [`Recherche ${normalized}`, cityId, normalized, existing[0].id]
+    ).catch(() => {});
+    return;
+  }
+
+  await query(
+    'INSERT INTO recherches_sauvegardees (id_utilisateur, nom, id_ville, quartier, est_actif) VALUES (?, ?, ?, ?, 1)',
+    [userId, `Recherche ${normalized}`, cityId, normalized]
+  ).catch(() => {});
 }
 
 async function listMine(req, res, next) {
@@ -121,104 +181,144 @@ async function listProfilsParVille(req, res, next) {
     const profession = String(req.query.profession || '').trim();
     const maxAge = Number(req.query.maxAge || 0);
     const months = Math.min(Math.max(Number(req.query.months || 3), 1), 12);
+    const includeAllRoles = ['1', 'true', 'oui', 'yes'].includes(String(req.query.includeAllRoles || '').toLowerCase());
+    const requestedRoles = String(req.query.roles || '')
+      .split(',')
+      .map((role) => ROLE_QUERY_ALIASES[role.trim().toLowerCase()] || role.trim().toLowerCase())
+      .filter(Boolean);
 
     if (!ville) {
       return res.status(400).json({ message: 'Ville requise.' });
     }
 
-    const clauses = [
-      'u.statut = ?',
-      'c.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)',
-      'LOWER(v.nom_ville) LIKE ?',
-    ];
-    const clausesSaved = [
-      'u.statut = ?',
-      'sr.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)',
-      'LOWER(v.nom_ville) LIKE ?',
-    ];
-    const values = ['active', months, `%${ville.toLowerCase()}%`];
-    const valuesSaved = ['active', months, `%${ville.toLowerCase()}%`];
+    await rememberSearchLocation(req.user?.id, ville);
 
+    const placeLike = `%${ville.toLowerCase()}%`;
+    const roleClause = requestedRoles.length > 0 && !includeAllRoles
+      ? ` AND LOWER(r.nom_role) IN (${requestedRoles.map(() => '?').join(',')})`
+      : '';
+    const profileClauses = [];
+    const profileValues = [];
     if (q) {
-      clauses.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
-      values.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
-      clausesSaved.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
-      valuesSaved.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
+      profileClauses.push('(LOWER(u.nom) LIKE ? OR LOWER(u.prenom) LIKE ? OR LOWER(u.bio) LIKE ?)');
+      profileValues.push(`%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`, `%${q.toLowerCase()}%`);
     }
     if (profession) {
-      clauses.push('LOWER(u.profession) LIKE ?');
-      values.push(`%${profession.toLowerCase()}%`);
-      clausesSaved.push('LOWER(u.profession) LIKE ?');
-      valuesSaved.push(`%${profession.toLowerCase()}%`);
+      profileClauses.push('LOWER(u.profession) LIKE ?');
+      profileValues.push(`%${profession.toLowerCase()}%`);
     }
     if (maxAge > 0) {
-      clauses.push('u.age IS NOT NULL AND u.age <= ?');
-      values.push(maxAge);
-      clausesSaved.push('u.age IS NOT NULL AND u.age <= ?');
-      valuesSaved.push(maxAge);
+      profileClauses.push('u.age IS NOT NULL AND u.age <= ?');
+      profileValues.push(maxAge);
     }
+    const profileClause = profileClauses.length ? ` AND ${profileClauses.join(' AND ')}` : '';
+    const roleValues = requestedRoles.length > 0 && !includeAllRoles ? requestedRoles : [];
 
     const rows = await query(
       `
       SELECT
-        u.id_utilisateur,
-        u.nom,
-        u.prenom,
-        u.email,
-        u.telephone,
-        u.age,
-        u.bio,
-        u.profile_picture,
-        u.profession,
-        u.est_verifie,
-        u.date_inscription,
-        MAX(v_act.nom_ville) AS ville_actuelle_nom,
-        MAX(v_orig.nom_ville) AS ville_origine_nom,
-        MAX(v.nom_ville) AS ville_recherchee,
-        COUNT(DISTINCT c.id_candidature) AS demandes_count,
-        MAX(c.date_creation) AS derniere_demande,
-        GROUP_CONCAT(DISTINCT a.titre ORDER BY c.date_creation DESC SEPARATOR '||') AS annonces_demandees
-      FROM candidatures c
-      JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
-      JOIN annonces a ON a.id_annonce = c.id_annonce
-      JOIN villes v ON v.id_ville = a.id_ville
-      LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
-      LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
-      WHERE ${clauses.join(' AND ')}
-      GROUP BY u.id_utilisateur
+        base.id_utilisateur,
+        MAX(base.nom) AS nom,
+        MAX(base.prenom) AS prenom,
+        MAX(base.email) AS email,
+        MAX(base.telephone) AS telephone,
+        MAX(base.age) AS age,
+        MAX(base.bio) AS bio,
+        MAX(base.profile_picture) AS profile_picture,
+        MAX(base.profession) AS profession,
+        MAX(base.role_key) AS role_key,
+        MAX(base.est_verifie) AS est_verifie,
+        MAX(base.date_inscription) AS date_inscription,
+        MAX(base.ville_actuelle_nom) AS ville_actuelle_nom,
+        MAX(base.ville_origine_nom) AS ville_origine_nom,
+        GROUP_CONCAT(DISTINCT base.ville_recherchee ORDER BY base.ville_recherchee SEPARATOR ', ') AS ville_recherchee,
+        SUM(base.demandes_count) AS demandes_count,
+        MAX(base.derniere_demande) AS derniere_demande,
+        GROUP_CONCAT(DISTINCT base.annonce_titre ORDER BY base.derniere_demande DESC SEPARATOR '||') AS annonces_demandees,
+        GROUP_CONCAT(DISTINCT base.source ORDER BY base.source SEPARATOR ',') AS sources
+      FROM (
+        SELECT
+          u.id_utilisateur, u.nom, u.prenom, u.email, u.telephone, u.age, u.bio, u.profile_picture,
+          u.profession, r.nom_role AS role_key, u.est_verifie, u.date_inscription,
+          v_act.nom_ville AS ville_actuelle_nom, v_orig.nom_ville AS ville_origine_nom,
+          COALESCE(a.quartier, v.nom_ville) AS ville_recherchee,
+          COUNT(DISTINCT c.id_candidature) AS demandes_count,
+          MAX(c.date_creation) AS derniere_demande,
+          a.titre AS annonce_titre,
+          'candidature' AS source
+        FROM candidatures c
+        JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+        JOIN roles r ON r.id_role = u.id_role
+        JOIN annonces a ON a.id_annonce = c.id_annonce
+        JOIN villes v ON v.id_ville = a.id_ville
+        LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+        LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
+        WHERE u.statut = ?
+          AND c.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)
+          AND (LOWER(v.nom_ville) LIKE ? OR LOWER(COALESCE(a.quartier, '')) LIKE ? OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ? OR LOWER(COALESCE(a.titre, '')) LIKE ?)
+          ${roleClause}
+          ${profileClause}
+        GROUP BY u.id_utilisateur, a.id_annonce
 
-      UNION
+        UNION ALL
 
-      SELECT
-        u.id_utilisateur,
-        u.nom,
-        u.prenom,
-        u.email,
-        u.telephone,
-        u.age,
-        u.bio,
-        u.profile_picture,
-        u.profession,
-        u.est_verifie,
-        u.date_inscription,
-        MAX(v_act.nom_ville) AS ville_actuelle_nom,
-        MAX(v_orig.nom_ville) AS ville_origine_nom,
-        MAX(v.nom_ville) AS ville_recherchee,
-        0 AS demandes_count,
-        MAX(sr.date_creation) AS derniere_demande,
-        NULL AS annonces_demandees
-      FROM recherches_sauvegardees sr
-      JOIN utilisateurs u ON u.id_utilisateur = sr.id_utilisateur
-      JOIN villes v ON v.id_ville = sr.id_ville
-      LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
-      LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
-      WHERE ${clausesSaved.join(' AND ')}
-      GROUP BY u.id_utilisateur
+        SELECT
+          u.id_utilisateur, u.nom, u.prenom, u.email, u.telephone, u.age, u.bio, u.profile_picture,
+          u.profession, r.nom_role AS role_key, u.est_verifie, u.date_inscription,
+          v_act.nom_ville AS ville_actuelle_nom, v_orig.nom_ville AS ville_origine_nom,
+          COALESCE(sr.quartier, v.nom_ville, sr.nom) AS ville_recherchee,
+          0 AS demandes_count,
+          MAX(sr.date_creation) AS derniere_demande,
+          NULL AS annonce_titre,
+          'recherche' AS source
+        FROM recherches_sauvegardees sr
+        JOIN utilisateurs u ON u.id_utilisateur = sr.id_utilisateur
+        JOIN roles r ON r.id_role = u.id_role
+        LEFT JOIN villes v ON v.id_ville = sr.id_ville
+        LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+        LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
+        WHERE u.statut = ?
+          AND sr.est_actif = 1
+          AND sr.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)
+          AND (LOWER(COALESCE(v.nom_ville, '')) LIKE ? OR LOWER(COALESCE(sr.quartier, '')) LIKE ? OR LOWER(COALESCE(sr.nom, '')) LIKE ?)
+          ${roleClause}
+          ${profileClause}
+        GROUP BY u.id_utilisateur, sr.id
 
+        UNION ALL
+
+        SELECT
+          u.id_utilisateur, u.nom, u.prenom, u.email, u.telephone, u.age, u.bio, u.profile_picture,
+          u.profession, r.nom_role AS role_key, u.est_verifie, u.date_inscription,
+          v_act.nom_ville AS ville_actuelle_nom, v_orig.nom_ville AS ville_origine_nom,
+          COALESCE(a.quartier, v.nom_ville) AS ville_recherchee,
+          0 AS demandes_count,
+          MAX(a.date_creation) AS derniere_demande,
+          a.titre AS annonce_titre,
+          'annonce' AS source
+        FROM annonces a
+        JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
+        JOIN roles r ON r.id_role = u.id_role
+        JOIN villes v ON v.id_ville = a.id_ville
+        LEFT JOIN villes v_act ON v_act.id_ville = u.ville_actuelle
+        LEFT JOIN villes v_orig ON v_orig.id_ville = u.ville_origine
+        WHERE u.statut = ?
+          AND a.date_creation >= DATE_SUB(NOW(), INTERVAL ? MONTH)
+          AND a.statut IN ('active', 'valide', 'validee', 'en_attente', 'pending')
+          AND (LOWER(v.nom_ville) LIKE ? OR LOWER(COALESCE(a.quartier, '')) LIKE ? OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ? OR LOWER(COALESCE(a.titre, '')) LIKE ?)
+          ${roleClause}
+          ${profileClause}
+        GROUP BY u.id_utilisateur, a.id_annonce
+      ) base
+      GROUP BY base.id_utilisateur
       ORDER BY derniere_demande DESC
       LIMIT 200
       `,
-      [...values, ...valuesSaved]
+      [
+        'active', months, placeLike, placeLike, placeLike, placeLike, ...roleValues, ...profileValues,
+        'active', months, placeLike, placeLike, placeLike, ...roleValues, ...profileValues,
+        'active', months, placeLike, placeLike, placeLike, placeLike, ...roleValues, ...profileValues,
+      ]
     );
 
     const isAuthenticated = Boolean(req.user);
@@ -234,6 +334,8 @@ async function listProfilsParVille(req, res, next) {
         bio: row.bio,
         profile_picture: row.profile_picture,
         profession: row.profession,
+        poste: PUBLIC_ROLE_LABELS[row.role_key] || row.role_key,
+        role: row.role_key,
         est_verifie: Boolean(row.est_verifie),
         date_inscription: row.date_inscription,
         ville_actuelle: row.ville_actuelle_nom,
@@ -242,6 +344,7 @@ async function listProfilsParVille(req, res, next) {
         demandes_count: Number(row.demandes_count || 0),
         derniere_demande: row.derniere_demande,
         annonces_demandees: row.annonces_demandees ? String(row.annonces_demandees).split('||') : [],
+        sources: row.sources ? String(row.sources).split(',') : [],
         email: isAuthenticated ? row.email : null,
         telephone: isAuthenticated ? row.telephone : null,
       })),
@@ -320,10 +423,20 @@ async function create(req, res, next) {
       });
     }
 
-    const id = await insertAndGetId(
-      `INSERT INTO candidatures (id_utilisateur, id_annonce, message, statut) VALUES (?, ?, ?, ?)`,
-      [req.user.id, id_annonce, message || null, normalizeStatus(statut)]
-    );
+    let id;
+    try {
+      id = await insertAndGetId(
+        `INSERT INTO candidatures (id_utilisateur, id_annonce, message, statut) VALUES (?, ?, ?, ?)`,
+        [req.user.id, id_annonce, message || null, normalizeStatus(statut)]
+      );
+    } catch (err) {
+      if (isDuplicateCandidatureError(err)) {
+        return res.status(409).json({
+          message: 'Vous avez déjà postulé à cette annonce.'
+        });
+      }
+      throw err;
+    }
 
     console.log(`✅ Candidature créée avec ID: ${id}`);
 
