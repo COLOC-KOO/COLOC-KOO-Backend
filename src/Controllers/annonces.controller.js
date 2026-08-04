@@ -1,9 +1,11 @@
-const { query, insertAndGetId } = require('../Services/db.service');
+﻿const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 const notify = require('../Services/notify.service');
+const { ensureBoosterSchema, BOOSTER_SELECT_SQL, BOOSTER_JOIN_SQL, BOOSTER_ACTIVE_SQL } = require('../Services/booster.service');
 
 async function list(req, res, next) {
   try {
+    await ensureBoosterSchema();
     const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service, coloc } = req.query;
     const clauses = [];
     const values = [];
@@ -109,7 +111,8 @@ async function list(req, res, next) {
             COUNT(DISTINCT c.id_candidature) AS candidature_count,
             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
+            ${BOOSTER_SELECT_SQL}
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
@@ -119,9 +122,10 @@ async function list(req, res, next) {
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+      ${BOOSTER_JOIN_SQL}
       ${whereSql}
       GROUP BY a.id_annonce
-      ORDER BY a.date_creation DESC
+      ORDER BY ${BOOSTER_ACTIVE_SQL} DESC, a.date_creation DESC
       LIMIT 500
       `,
       values
@@ -133,48 +137,10 @@ async function list(req, res, next) {
   }
 }
 
-// async function getById(req, res, next) {
-//   try {
-//     await query('SET SESSION group_concat_max_len = 1000000');
-//     const rows = await query(
-//       `
-//       SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-//              v.nom_ville, r.nom_region,
-//              ch.surface AS chambre_surface, ch.prix_loyer, ch.date_disponibilite,
-//              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
-//              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-//              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
-//       FROM annonces a
-//       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
-//       JOIN villes v ON v.id_ville = a.id_ville
-//       JOIN regions r ON r.id_region = v.id_region
-//       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
-//       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
-//       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
-//       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-//       WHERE a.id_annonce = ?
-//       GROUP BY a.id_annonce
-//       LIMIT 1
-//       `,
-//       [req.params.id]
-//     );
-
-//     if (rows.length === 0) {
-//       return res.status(404).json({ message: 'Annonce introuvable.' });
-//     }
-
-//     const annonce = mapAnnonceRow(rows[0]);
-//     annonce.photos = await getPhotoUrlsByAnnonce(req.params.id);
-//     const extra = await hydrateAnnonce(req.params.id);
-//     res.json({ ...annonce, ...extra });
-//   } catch (err) {
-//     next(err);
-//   }
-// }
-
-// ✅ CORRECTION : Utiliser MIN() pour les colonnes non agrégées
+// âœ… CORRECTION : Utiliser MIN() pour les colonnes non agrÃ©gÃ©es
 async function getById(req, res, next) {
   try {
+    await ensureBoosterSchema();
     await query('SET SESSION group_concat_max_len = 1000000');
     const rows = await query(
       `
@@ -188,7 +154,8 @@ async function getById(req, res, next) {
              COUNT(DISTINCT c.id_candidature) AS candidature_count,
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
+            ${BOOSTER_SELECT_SQL}
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
@@ -198,6 +165,7 @@ async function getById(req, res, next) {
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+      ${BOOSTER_JOIN_SQL}
       WHERE a.id_annonce = ?
       GROUP BY a.id_annonce
       LIMIT 1
@@ -283,10 +251,8 @@ async function create(req, res, next) {
        INSERT INTO annonces
        (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
         type_propriete, type_bail, clause_solidarite, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
-        longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs,
-        energy_class, ghg_class, elevator, pets_allowed, smokers_allowed, women_only, men_only)
-       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?)
+        longitude)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `,
        [
          req.user.id,
@@ -306,18 +272,6 @@ async function create(req, res, next) {
          id_ville,
          latitude,
          longitude,
-         internet,
-         parking_voitures,
-         parking_motos,
-         parking_couvert,
-         services_communs ? JSON.stringify(services_communs) : null,
-         energy_class,
-         ghg_class,
-         elevator,
-         pets_allowed,
-         smokers_allowed,
-         women_only,
-         men_only,
        ]
      );
 
@@ -396,13 +350,13 @@ async function create(req, res, next) {
       );
       const nomDeposant = dep ? `${dep.prenom || ''} ${dep.nom || ''}`.trim() : `#${req.user.id}`;
       await notify.notifyStaff({
-        titre: 'Nouvelle annonce à valider',
-        texte: `${nomDeposant} a déposé l'annonce « ${titre} » (réf. ${ref}). En attente de validation.`,
+        titre: 'Nouvelle annonce Ã  valider',
+        texte: `${nomDeposant} a dÃ©posÃ© l'annonce Â« ${titre} Â» (rÃ©f. ${ref}). En attente de validation.`,
         lien: '/admin/annonces',
         roles: ['moderator', 'admin', 'super_admin'],
-        intro: `<strong>${nomDeposant}</strong> a déposé une nouvelle annonce, en attente de validation.`,
+        intro: `<strong>${nomDeposant}</strong> a dÃ©posÃ© une nouvelle annonce, en attente de validation.`,
         details: [
-          ['Référence', `<strong>${ref}</strong>`],
+          ['RÃ©fÃ©rence', `<strong>${ref}</strong>`],
           ['Titre', titre],
           ['Type de bien', type_propriete],
         ],
@@ -423,8 +377,7 @@ async function update(req, res, next) {
     const allowed = [
       'titre', 'description', 'statut', 'type_bailleur', 'mode_annonce', 'type_annonce',
       'type_propriete', 'type_bail', 'clause_solidarite', 'total_colocataires', 'surface_totale', 'adresse_exacte', 'quartier',
-      'id_ville', 'latitude', 'longitude', 'internet', 'parking_voitures', 'parking_motos',
-      'parking_couvert', 'services_communs', 'date_publication', 'date_expiration', 'booster'
+      'id_ville', 'latitude', 'longitude', 'date_publication', 'date_expiration', 'booster'
     ];
     const sets = [];
     const values = [];
@@ -570,7 +523,8 @@ async function getPhotoUrlsByAnnonce(id) {
 //            MIN(ch.surface) AS chambre_surface, MIN(ch.prix_loyer) AS prix_loyer, MIN(ch.date_disponibilite) AS date_disponibilite,
 //            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
 //            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-//            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+//            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
+            
 //     FROM annonces a
 //     JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
 //     JOIN villes v ON v.id_ville = a.id_ville
@@ -593,8 +547,9 @@ async function getPhotoUrlsByAnnonce(id) {
 //   return annonce;
 // }
 
-// ✅ CORRECTION : Utiliser MIN() pour les colonnes non agrégées
+// âœ… CORRECTION : Utiliser MIN() pour les colonnes non agrÃ©gÃ©es
 async function getByIdInternal(id) {
+  await ensureBoosterSchema();
   await query('SET SESSION group_concat_max_len = 1000000');
   const rows = await query(
     `
@@ -607,7 +562,8 @@ async function getByIdInternal(id) {
            COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-           GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos
+           GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
+           ${BOOSTER_SELECT_SQL}
     FROM annonces a
     JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
     JOIN villes v ON v.id_ville = a.id_ville
@@ -616,6 +572,7 @@ async function getByIdInternal(id) {
     LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
     LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
     LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
+    ${BOOSTER_JOIN_SQL}
     WHERE a.id_annonce = ?
     GROUP BY a.id_annonce
     LIMIT 1
@@ -631,3 +588,8 @@ async function getByIdInternal(id) {
 }
 
 module.exports = { list, getById, uploadPhotos, create, update, updateStatus, remove };
+
+
+
+
+

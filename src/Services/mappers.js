@@ -1,4 +1,4 @@
-function mapUserRow(row) {
+﻿function mapUserRow(row) {
   const roleLabel = toPublicRole(row.nom_role);
   return {
     id: row.id_utilisateur,
@@ -77,7 +77,16 @@ function mapAnnonceRow(row) {
     date_modification: row.date_modification,
     date_publication: row.date_publication,
     date_expiration: row.date_expiration,
-    booster: Boolean(row.booster),
+    booster: row.booster != null ? Number(row.booster) : null,
+    boost_service_id: row.boost_service_id != null ? Number(row.boost_service_id) : null,
+    booster_nom: row.booster_nom || null,
+    booster_description: row.booster_description || null,
+    booster_cle_service: row.booster_cle_service || null,
+    booster_duree: row.booster_duree != null ? Number(row.booster_duree) : null,
+    booster_unite: row.booster_unite || null,
+    booster_prix: row.booster_prix != null ? Number(row.booster_prix) : null,
+    booster_date_creation: row.booster_date_creation || null,
+    booster_actif: row.booster_actif != null ? Boolean(Number(row.booster_actif)) : Boolean(row.booster),
     energy_class: row.energy_class,
     ghg_class: row.ghg_class,
     elevator: Boolean(row.elevator),
@@ -128,3 +137,4 @@ module.exports = {
   parseJsonMaybe,
   toPublicRole,
 };
+
