@@ -1,4 +1,4 @@
-const router = require('express').Router();
+﻿const router = require('express').Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -45,6 +45,10 @@ router.get('/services-ckoo', controller.servicesCkoo);
 router.post('/services-ckoo', controller.createServiceCkoo);
 router.patch('/services-ckoo/:id', controller.updateServiceCkoo);
 router.delete('/services-ckoo/:id', controller.deleteServiceCkoo);
+router.get('/boosters', controller.boosters);
+router.post('/boosters', controller.createBooster);
+router.patch('/boosters/:id', controller.updateBooster);
+router.delete('/boosters/:id', controller.deleteBooster);
 router.get('/partenaires', controller.partenaires);
 router.get('/partenaires/requests', controller.partenaireRequests);
 router.patch('/partenaires/requests/:id', controller.updatePartenaireRequest);
@@ -76,3 +80,4 @@ router.patch('/members/:id/status', controller.moderateMember);
 router.use('/campagnes', campagnesRoutes);
 
 module.exports = router;
+

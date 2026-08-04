@@ -1,7 +1,8 @@
-const { query } = require('../Services/db.service');
+﻿const { query } = require('../Services/db.service');
+const { ensureBoosterSchema } = require('../Services/booster.service');
 
 // ============================================================================
-//  CONTENU DU CONTRAT — 100% en base (bareme, paiement, clauses, textes)
+//  CONTENU DU CONTRAT â€” 100% en base (bareme, paiement, clauses, textes)
 //  Valeurs par defaut = seed initial ; une fois en base, la source de verite
 //  est la DB (table contrat_clauses + cles configuration_backoffice).
 // ============================================================================
@@ -16,73 +17,73 @@ const DEFAULT_MOBILE_MONEY = [
   { nom: 'MVOLA', numero: '0340000000', couleur: '#e2001a', hint: "Scanne ce QR code avec l'appli MVOLA, ou compose le numero." },
 ];
 const DEFAULT_CLAUSES = [
-  { titre: 'Identités & logement', description: "Colocataires, adresse du bien, date d'entrée (inclus).", ordre: 1 },
-  { titre: 'Répartition du loyer et des charges', description: 'Quote-part de chacun, modalités de paiement.', ordre: 2 },
-  { titre: 'Dépôt de garantie / caution solidaire', description: 'Montant, conditions de restitution.', ordre: 3 },
-  { titre: "État des lieux d'entrée", description: 'Annexe descriptive des parties privatives et communes.', ordre: 4 },
-  { titre: 'Clause de départ anticipé', description: 'Préavis, remplacement du colocataire sortant.', ordre: 5 },
+  { titre: 'IdentitÃ©s & logement', description: "Colocataires, adresse du bien, date d'entrÃ©e (inclus).", ordre: 1 },
+  { titre: 'RÃ©partition du loyer et des charges', description: 'Quote-part de chacun, modalitÃ©s de paiement.', ordre: 2 },
+  { titre: 'DÃ©pÃ´t de garantie / caution solidaire', description: 'Montant, conditions de restitution.', ordre: 3 },
+  { titre: "Ã‰tat des lieux d'entrÃ©e", description: 'Annexe descriptive des parties privatives et communes.', ordre: 4 },
+  { titre: 'Clause de dÃ©part anticipÃ©', description: 'PrÃ©avis, remplacement du colocataire sortant.', ordre: 5 },
 ];
 const DEFAULT_OFFER = {
-  titre: 'Aide à la création de contrats avec les colocataires',
-  texte: "Coloc'KOO peut rédiger pour toi un contrat de colocation conforme, signé entre les colocataires et/ou te proposer un document d'état des lieux. Voici un aperçu pré-rempli avec leurs noms et l'adresse du bien :",
+  titre: 'Aide Ã  la crÃ©ation de contrats avec les colocataires',
+  texte: "Coloc'KOO peut rÃ©diger pour toi un contrat de colocation conforme, signÃ© entre les colocataires et/ou te proposer un document d'Ã©tat des lieux. Voici un aperÃ§u prÃ©-rempli avec leurs noms et l'adresse du bien :",
 };
 const DEFAULT_BODY = {
-  titre: "Contrat de colocation — Sarintany'COLOC",
-  intro: "Entre les soussigné·e·s : {names}, ci-après dénommé·e·s « les colocataires »,\nPour le logement situé : {address},\nDate d'entrée dans les lieux : {date}.",
-  corps: "Il a été convenu et arrêté ce qui suit. Article 1 — Objet : le présent contrat a pour objet de définir les règles de la vie commune et la répartition…",
+  titre: "Contrat de colocation â€” Sarintany'COLOC",
+  intro: "Entre les soussignÃ©Â·eÂ·s : {names}, ci-aprÃ¨s dÃ©nommÃ©Â·eÂ·s Â« les colocataires Â»,\nPour le logement situÃ© : {address},\nDate d'entrÃ©e dans les lieux : {date}.",
+  corps: "Il a Ã©tÃ© convenu et arrÃªtÃ© ce qui suit. Article 1 â€” Objet : le prÃ©sent contrat a pour objet de dÃ©finir les rÃ¨gles de la vie commune et la rÃ©partitionâ€¦",
 };
 const DEFAULT_BAIL = [
-  { cle: 'individuel', titre: 'Bail individuel', description: 'Chaque colocataire signe son propre contrat avec le propriétaire.' },
-  { cle: 'collectif', titre: 'Bail collectif', description: "Un seul document signé par l'ensemble des parties." },
+  { cle: 'individuel', titre: 'Bail individuel', description: 'Chaque colocataire signe son propre contrat avec le propriÃ©taire.' },
+  { cle: 'collectif', titre: 'Bail collectif', description: "Un seul document signÃ© par l'ensemble des parties." },
 ];
 const DEFAULT_SOLIDARITE = [
-  { cle: 'avec', titre: 'AVEC clause de solidarité', description: "Tous les colocataires sont solidaires : si l'un manque, les autres sont redevables de l'ensemble du loyer." },
-  { cle: 'sans', titre: 'SANS clause de solidarité', description: 'Chaque colocataire reste responsable de sa part seulement.' },
+  { cle: 'avec', titre: 'AVEC clause de solidaritÃ©', description: "Tous les colocataires sont solidaires : si l'un manque, les autres sont redevables de l'ensemble du loyer." },
+  { cle: 'sans', titre: 'SANS clause de solidaritÃ©', description: 'Chaque colocataire reste responsable de sa part seulement.' },
 ];
 const DEFAULT_MAIL_NOTE = {
-  contrat: "Le contrat finalisé te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés. Pour compléter les informations nécessaires à la rédaction du contrat, rendez-vous dans ta messagerie.",
-  edl: "Le document te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés.",
+  contrat: "Le contrat finalisÃ© te sera envoyÃ© par e-mail Ã  {email}. Tu n'auras plus qu'Ã  le faire signer par l'ensemble des parties lors de la remise des clÃ©s. Pour complÃ©ter les informations nÃ©cessaires Ã  la rÃ©daction du contrat, rendez-vous dans ta messagerie.",
+  edl: "Le document te sera envoyÃ© par e-mail Ã  {email}. Tu n'auras plus qu'Ã  le faire signer par l'ensemble des parties lors de la remise des clÃ©s.",
 };
 // Gabarit HTML du vrai document de contrat (100% en base). Les {placeholders} sont
 // remplaces cote backend a partir des donnees reelles (parties, logement, adresse exacte...).
-const DEFAULT_DOCUMENT_TEMPLATE = `<h1>Contrat de colocation — Sarintany'COLOC</h1>
-<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
+const DEFAULT_DOCUMENT_TEMPLATE = `<h1>Contrat de colocation â€” Sarintany'COLOC</h1>
+<p class="ref">RÃ©fÃ©rence : {reference} â€” Fait Ã  {ville}, le {today}</p>
 
-<h2>Entre les soussigné·e·s</h2>
-<p>Le/La propriétaire (bailleur) : <b>{proprietaire}</b></p>
+<h2>Entre les soussignÃ©Â·eÂ·s</h2>
+<p>Le/La propriÃ©taire (bailleur) : <b>{proprietaire}</b></p>
 <p>Les colocataires (preneurs) : <b>{colocataires}</b></p>
 
-<h2>Désignation du logement</h2>
+<h2>DÃ©signation du logement</h2>
 <p>Adresse : <b>{adresse}</b>.</p>
 <p>Nature du bien : {type_bien}.</p>
-<p>Date d'entrée dans les lieux : <b>{date_entree}</b>.</p>
+<p>Date d'entrÃ©e dans les lieux : <b>{date_entree}</b>.</p>
 
 <h2>Conditions du bail</h2>
 <p>Type de bail : <b>{type_bail}</b>.</p>
 <p>{solidarite_phrase}</p>
-<p>Loyer mensuel : <b>{loyer} Ar</b> — Charges : <b>{charges} Ar</b> — Dépôt de garantie : <b>{caution} Ar</b>.</p>
+<p>Loyer mensuel : <b>{loyer} Ar</b> â€” Charges : <b>{charges} Ar</b> â€” DÃ©pÃ´t de garantie : <b>{caution} Ar</b>.</p>
 
-<h2>Article 1 — Objet</h2>
-<p>Le présent contrat a pour objet de définir les règles de la vie commune et la répartition des charges entre les colocataires du logement désigné ci-dessus.</p>
+<h2>Article 1 â€” Objet</h2>
+<p>Le prÃ©sent contrat a pour objet de dÃ©finir les rÃ¨gles de la vie commune et la rÃ©partition des charges entre les colocataires du logement dÃ©signÃ© ci-dessus.</p>
 
-<h2>Article 2 — Éléments du contrat</h2>
+<h2>Article 2 â€” Ã‰lÃ©ments du contrat</h2>
 {clauses_list}
 
-<h2>Article 3 — État des lieux</h2>
-<p>Un état des lieux contradictoire est établi à l'entrée et à la sortie du logement et annexé au présent contrat.</p>
+<h2>Article 3 â€” Ã‰tat des lieux</h2>
+<p>Un Ã©tat des lieux contradictoire est Ã©tabli Ã  l'entrÃ©e et Ã  la sortie du logement et annexÃ© au prÃ©sent contrat.</p>
 
 <h2>Signatures</h2>
 {signatures}`;
-const DEFAULT_EDL_TEMPLATE = `<h1>État des lieux — Sarintany'COLOC</h1>
-<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
+const DEFAULT_EDL_TEMPLATE = `<h1>Ã‰tat des lieux â€” Sarintany'COLOC</h1>
+<p class="ref">RÃ©fÃ©rence : {reference} â€” Fait Ã  {ville}, le {today}</p>
 
 <h2>Logement</h2>
 <p>Adresse : <b>{adresse}</b> ({type_bien}).</p>
 <p>Occupants : <b>{colocataires}</b>.</p>
-<p>Date d'entrée : <b>{date_entree}</b>.</p>
+<p>Date d'entrÃ©e : <b>{date_entree}</b>.</p>
 
 <h2>Constat</h2>
-<p>Le présent document constate l'état du logement et de ses équipements à l'entrée et à la sortie des lieux (constat contradictoire entre le propriétaire et les colocataires).</p>
+<p>Le prÃ©sent document constate l'Ã©tat du logement et de ses Ã©quipements Ã  l'entrÃ©e et Ã  la sortie des lieux (constat contradictoire entre le propriÃ©taire et les colocataires).</p>
 
 <h2>Signatures</h2>
 {signatures}`;
@@ -251,4 +252,19 @@ async function listServices(req, res, next) {
   }
 }
 
-module.exports = { listRoles, listLangues, listRegions, listVilles, listServices, contractConfig, ensureContractContent, getConfigValue };
+async function listBoosters(req, res, next) {
+  try {
+    await ensureBoosterSchema();
+    const rows = await query(
+      `SELECT id_booster, nom, description, cle_service, duree, prix, unite, est_actif, date_creation
+       FROM booster
+       WHERE est_actif = 1
+       ORDER BY cle_service ASC, duree ASC, prix ASC, nom ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+module.exports = { listRoles, listLangues, listRegions, listVilles, listServices, listBoosters, contractConfig, ensureContractContent, getConfigValue };
+

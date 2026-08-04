@@ -1,4 +1,5 @@
-const depotAnnonceModel = require('../Models/depotAnnonce.model');
+﻿const depotAnnonceModel = require('../Models/depotAnnonce.model');
+const annoncesController = require('./annonces.controller');
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
@@ -14,7 +15,7 @@ function validateCreatePayload(payload) {
 
   for (const room of payload.chambres) {
     if (!room.loyer || !room.disponible_a_partir || !room.meublee) {
-      return 'Chaque chambre doit avoir un loyer, une date de disponibilité et le champ meublée.';
+      return 'Chaque chambre doit avoir un loyer, une date de disponibilitÃ© et le champ meublÃ©e.';
     }
   }
   return null;
@@ -53,6 +54,8 @@ async function create(req, res, next) {
 }
 
 module.exports = {
+  list: annoncesController.list,
+  getById: annoncesController.getById,
   uploadPhotos,
   create,
 };

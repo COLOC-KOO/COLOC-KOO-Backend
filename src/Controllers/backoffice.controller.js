@@ -1,6 +1,7 @@
-const bcrypt = require('bcryptjs');
+﻿const bcrypt = require('bcryptjs');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
+const { ensureBoosterSchema, normalizeBoosterPayload } = require('../Services/booster.service');
 
 const WARNING_REASONS = [
   'Renseignements manquants',
@@ -225,7 +226,7 @@ async function createMember(req, res, next) {
 
     const existing = await query('SELECT id_utilisateur FROM utilisateurs WHERE email = ? LIMIT 1', [email]);
     if (existing.length > 0) {
-      return res.status(400).json({ message: 'Email déjà utilisé.' });
+      return res.status(400).json({ message: 'Email dÃ©jÃ  utilisÃ©.' });
     }
 
     const roleId = await resolveRoleId(role);
@@ -315,7 +316,7 @@ async function deleteMember(req, res, next) {
   try {
     await query('DELETE FROM utilisateurs WHERE id_utilisateur = ?', [req.params.id]);
     await logAction(req, 'Suppression', 'utilisateur', req.params.id, null);
-    res.json({ message: 'Membre supprimé.' });
+    res.json({ message: 'Membre supprimÃ©.' });
   } catch (err) {
     next(err);
   }
@@ -585,11 +586,11 @@ async function deleteJournalEntry(req, res, next) {
     await ensureBackofficeSchema();
     const existing = await query('SELECT id_action FROM journal_actions WHERE id_action = ?', [id]);
     if (!existing.length) {
-      return res.status(404).json({ message: 'Entrée introuvable.' });
+      return res.status(404).json({ message: 'EntrÃ©e introuvable.' });
     }
 
     await query('DELETE FROM journal_actions WHERE id_action = ?', [id]);
-    res.json({ message: 'Entrée du journal supprimée.' });
+    res.json({ message: 'EntrÃ©e du journal supprimÃ©e.' });
   } catch (err) {
     next(err);
   }
@@ -675,6 +676,86 @@ async function deleteServiceCkoo(req, res, next) {
   }
 }
 
+
+async function boosters(req, res, next) {
+  try {
+    await ensureBoosterSchema();
+    const rows = await query(`
+      SELECT id_booster, nom, description, cle_service, duree, prix, unite, est_actif, date_creation
+      FROM booster
+      ORDER BY est_actif DESC, cle_service ASC, duree ASC, prix ASC, nom ASC
+    `);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createBooster(req, res, next) {
+  try {
+    await ensureBoosterSchema();
+    const payload = normalizeBoosterPayload(req.body, 'boost_');
+    if (!payload.nom) return res.status(400).json({ message: 'Nom requis.' });
+
+    const id = await insertAndGetId(
+      `INSERT INTO booster (cle_service, nom, description, duree, prix, unite, est_actif)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [payload.cle_service, payload.nom, payload.description, payload.duree, payload.prix, payload.unite, payload.est_actif]
+    );
+    await logAction(req, 'Correction', 'booster', id, { operation: 'creation', cle_service: payload.cle_service });
+    res.status(201).json({ id_booster: id });
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'Cette cle_service existe deja.' });
+    }
+    next(err);
+  }
+}
+
+async function updateBooster(req, res, next) {
+  try {
+    await ensureBoosterSchema();
+    const allowed = ['cle_service', 'nom', 'description', 'duree', 'prix', 'unite', 'est_actif'];
+    const sets = [];
+    const values = [];
+
+    for (const key of allowed) {
+      if (req.body[key] === undefined) continue;
+      let value = req.body[key];
+      if (key === 'nom') value = String(value || '').trim();
+      if (key === 'description') value = value ? String(value).trim() : null;
+      if (key === 'cle_service') value = String(value || '').trim();
+      if (key === 'duree') value = Math.max(1, Number.parseInt(value, 10) || 1);
+      if (key === 'prix') value = Number.isFinite(Number(value)) ? Number(value) : 0;
+      if (key === 'unite' && !['heure', 'jour', 'semaine', 'mois'].includes(value)) value = 'jour';
+      if (key === 'est_actif') value = value === 0 || value === false ? 0 : 1;
+      sets.push(`${key} = ?`);
+      values.push(value);
+    }
+
+    if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
+    values.push(req.params.id);
+    await query(`UPDATE booster SET ${sets.join(', ')} WHERE id_booster = ?`, values);
+    await logAction(req, 'Correction', 'booster', req.params.id, req.body);
+    res.json({ message: 'Booster mis a jour.' });
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'Cette cle_service existe deja.' });
+    }
+    next(err);
+  }
+}
+
+async function deleteBooster(req, res, next) {
+  try {
+    await ensureBoosterSchema();
+    await query('UPDATE booster SET est_actif = 0 WHERE id_booster = ?', [req.params.id]);
+    await logAction(req, 'Correction', 'booster', req.params.id, { operation: 'desactivation' });
+    res.json({ message: 'Booster desactive.' });
+  } catch (err) {
+    next(err);
+  }
+}
 async function partenaireRequests(req, res, next) {
   try {
     const rows = await query(`
@@ -710,9 +791,9 @@ function parseMaybeJson(value) {
 
 async function statistiquesColocation(req, res, next) {
   try {
-    console.log('📊 Génération des statistiques de colocation...');
+    console.log('ðŸ“Š GÃ©nÃ©ration des statistiques de colocation...');
 
-    // Récupérer toutes les annonces avec leurs informations
+    // RÃ©cupÃ©rer toutes les annonces avec leurs informations
     const rows = await query(`
       SELECT 
         a.id_annonce,
@@ -738,9 +819,9 @@ async function statistiquesColocation(req, res, next) {
       LIMIT 1000
     `);
 
-    console.log(`📊 ${rows.length} annonces récupérées`);
+    console.log(`ðŸ“Š ${rows.length} annonces rÃ©cupÃ©rÃ©es`);
 
-    // Transformer les données pour le frontend
+    // Transformer les donnÃ©es pour le frontend
     const items = rows.map(row => {
       let services = [];
       try {
@@ -753,7 +834,7 @@ async function statistiquesColocation(req, res, next) {
         services = [];
       }
 
-      // ✅ CORRECTION : Formater la date correctement
+      // âœ… CORRECTION : Formater la date correctement
       let dateStr = '';
       if (row.date_creation) {
         if (typeof row.date_creation === 'string') {
@@ -761,7 +842,7 @@ async function statistiquesColocation(req, res, next) {
         } else if (row.date_creation instanceof Date) {
           dateStr = row.date_creation.toISOString().split('T')[0];
         } else {
-          // Si c'est un objet MySQL, le convertir en chaîne
+          // Si c'est un objet MySQL, le convertir en chaÃ®ne
           dateStr = String(row.date_creation).split('T')[0];
         }
       }
@@ -774,7 +855,7 @@ async function statistiquesColocation(req, res, next) {
 
       const annonceMap = {
         'existante': 'Colocation existante',
-        'creation': 'Création'
+        'creation': 'CrÃ©ation'
       };
 
       const meubleMap = {
@@ -787,7 +868,7 @@ async function statistiquesColocation(req, res, next) {
       return {
         id: String(row.id_annonce || ''),
         date: dateStr,
-        quartier: row.quartier || 'Non renseigné',
+        quartier: row.quartier || 'Non renseignÃ©',
         type: typeMap[row.type_propriete] || 'Autre',
         annonce: annonceMap[row.type_annonce] || 'Colocation existante',
         nbColocs: row.total_colocataires || 2,
@@ -800,7 +881,7 @@ async function statistiquesColocation(req, res, next) {
         internet: row.internet || 'Aucune',
         parkingVoit: row.parking_voitures || 0,
         parking2r: row.parking_motos || 0,
-        commod: services.length > 0 ? services : ['Eau courante', 'Électricité'],
+        commod: services.length > 0 ? services : ['Eau courante', 'Ã‰lectricitÃ©'],
         svck: [],
         filles: false,
         garcons: false,
@@ -816,7 +897,7 @@ async function statistiquesColocation(req, res, next) {
     });
 
   } catch (err) {
-    console.error('❌ Erreur statistiquesColocation:', err);
+    console.error('âŒ Erreur statistiquesColocation:', err);
     next(err);
   }
 }
@@ -1144,7 +1225,7 @@ async function updatePaiementStatus(req, res, next) {
     }
     await query('UPDATE paiements SET statut = ? WHERE id_paiement = ?', [statut, req.params.id]);
     await logAction(req, 'Correction', 'paiement', req.params.id, { statut });
-    res.json({ message: 'Paiement mis à jour.' });
+    res.json({ message: 'Paiement mis Ã  jour.' });
   } catch (err) {
     next(err);
   }
@@ -1208,6 +1289,10 @@ module.exports = {
   createServiceCkoo,
   updateServiceCkoo,
   deleteServiceCkoo,
+  boosters,
+  createBooster,
+  updateBooster,
+  deleteBooster,
   backofficePaiements,
   updatePaiementStatus,
   contrats,
@@ -1232,3 +1317,4 @@ module.exports = {
   deleteMember,
   saveObjectif,
 };
+
