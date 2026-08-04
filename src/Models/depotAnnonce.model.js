@@ -1,4 +1,5 @@
-const { query, insertAndGetId } = require('../Services/db.service');
+﻿const { query, insertAndGetId } = require('../Services/db.service');
+const { getActiveBoosterId } = require('../Services/booster.service');
 
 function toNullableNumber(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -36,10 +37,11 @@ async function createDepotAnnonce(userId, payload) {
   const idVille = await findOrCreateVilleId(payload.ville);
   const logement = String(payload.logement || 'Appartement');
   const typeAnnonce = String(payload.type_annonce || 'Location');
-  const titre = `${typeAnnonce} - ${logement}${payload.quartier ? ` à ${payload.quartier}` : ''}`;
+  const titre = `${typeAnnonce} - ${logement}${payload.quartier ? ` Ã  ${payload.quartier}` : ''}`;
   const description = payload.message || null;
   const photos = Array.isArray(payload.photos) ? payload.photos.filter((photo) => typeof photo === 'string' && photo.trim()) : [];
   const surface = toNullableNumber(payload.surface);
+  const boosterId = await getActiveBoosterId(payload.boost_service_id);
 
   const annonceId = await insertAndGetId(
     `
@@ -62,7 +64,7 @@ async function createDepotAnnonce(userId, payload) {
       idVille,
       toNullableNumber(payload.latitude),
       toNullableNumber(payload.longitude),
-      payload.boost_service_id ? 1 : 0,
+      boosterId,
     ]
   );
 
@@ -94,7 +96,7 @@ async function createDepotAnnonce(userId, payload) {
       payload.telephone || null,
       payload.message || null,
       payload.visite_3d || null,
-      toNullableNumber(payload.boost_service_id),
+      boosterId,
     ]
   );
 
@@ -159,3 +161,4 @@ async function createDepotAnnonce(userId, payload) {
 module.exports = {
   createDepotAnnonce,
 };
+
