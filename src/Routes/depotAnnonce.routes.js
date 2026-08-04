@@ -1,4 +1,4 @@
-const path = require('path');
+﻿const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const router = require('express').Router();
@@ -19,7 +19,10 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+router.get('/', controller.list);
+router.get('/:id', controller.getById);
 router.post('/upload', requireAuth, upload.array('photos'), controller.uploadPhotos);
 router.post('/', requireAuth, controller.create);
 
 module.exports = router;
+
