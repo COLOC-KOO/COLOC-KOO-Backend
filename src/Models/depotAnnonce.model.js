@@ -1,6 +1,10 @@
 ﻿const { query, insertAndGetId } = require('../Services/db.service');
 const { getActiveBoosterId } = require('../Services/booster.service');
 
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
 function toNullableNumber(value) {
   if (value === undefined || value === null || value === '') return null;
   const numberValue = Number(value);
@@ -20,6 +24,44 @@ function mapLogementToAnnonceType(logement) {
   return 'appartement';
 }
 
+/* --- annonces.type_annonce : enum('existante','creation') --- */
+const ANNONCE_TYPE_ANNONCE_VALUES = ['existante', 'creation'];
+function normalizeAnnonceTypeAnnonce(value) {
+  const v = String(value || '').trim();
+  return ANNONCE_TYPE_ANNONCE_VALUES.includes(v) ? v : 'existante';
+}
+
+/* --- annonces.type_bailleur : enum('membre','proprio','pro') --- */
+const TYPE_BAILLEUR_VALUES = ['membre', 'proprio', 'pro'];
+function normalizeTypeBailleur(value) {
+  const v = String(value || '').trim();
+  return TYPE_BAILLEUR_VALUES.includes(v) ? v : 'membre';
+}
+
+/* --- annonces.mode_annonce : enum('flux','complete') --- */
+const MODE_ANNONCE_VALUES = ['flux', 'complete'];
+function normalizeModeAnnonce(value) {
+  const v = String(value || '').trim();
+  return MODE_ANNONCE_VALUES.includes(v) ? v : 'complete';
+}
+
+/* --- depot_annonce.type_annonce : enum différent (catégorie du bien) --- */
+/* Ce formulaire ne produit que des annonces de colocation.             */
+const DEPOT_TYPE_ANNONCE_DEFAULT = 'Colocation';
+
+/* --- depot_annonce.logement : enum('Appartement','Maison','Villa','Cabane','Studio','Chalet','Autre') --- */
+const DEPOT_LOGEMENT_VALUES = ['Appartement', 'Maison', 'Villa', 'Cabane', 'Studio', 'Chalet', 'Autre'];
+function normalizeDepotLogement(value) {
+  const v = String(value || '').trim();
+  return DEPOT_LOGEMENT_VALUES.includes(v) ? v : 'Appartement';
+}
+
+/* --- chambres / depot_annonce_chambres.meublee (si enum côté DB, sinon libre) --- */
+function normalizeMeublee(value) {
+  const v = String(value || '').trim();
+  return v || 'Non';
+}
+
 async function findOrCreateVilleId(ville) {
   const name = String(ville || '').trim() || 'Antananarivo';
   const existing = await query('SELECT id_ville FROM villes WHERE LOWER(nom_ville) = LOWER(?) LIMIT 1', [name]);
@@ -30,18 +72,37 @@ async function findOrCreateVilleId(ville) {
   return insertAndGetId('INSERT INTO villes (nom_ville, id_region) VALUES (?, ?)', [name, regionId]);
 }
 
+/* ------------------------------------------------------------------ */
+/* Création                                                            */
+/* ------------------------------------------------------------------ */
+
 async function createDepotAnnonce(userId, payload) {
   const rooms = Array.isArray(payload.chambres) && payload.chambres.length > 0 ? payload.chambres : [];
-  const firstRoom = rooms[0] || {};
   const reference = `DPA-${Date.now().toString().slice(-8)}`;
   const idVille = await findOrCreateVilleId(payload.ville);
-  const logement = String(payload.logement || 'Appartement');
-  const typeAnnonce = String(payload.type_annonce || 'Location');
-  const titre = `${typeAnnonce} - ${logement}${payload.quartier ? ` Ã  ${payload.quartier}` : ''}`;
+
+  const logement = normalizeDepotLogement(payload.logement);
+  const annonceTypeAnnonce = normalizeAnnonceTypeAnnonce(payload.type_annonce);
+  const depotTypeAnnonce = DEPOT_TYPE_ANNONCE_DEFAULT;
+  const typeBailleur = normalizeTypeBailleur(payload.extra?.role);
+  const modeAnnonce = normalizeModeAnnonce(payload.extra?.mode);
+
+  // titre : NOT NULL — toujours une valeur non vide, même si quartier absent
+  const quartierPart = payload.quartier ? ` à ${payload.quartier}` : '';
+  const titre = `${logement}${quartierPart}` || 'Annonce de colocation';
+
   const description = payload.message || null;
   const photos = Array.isArray(payload.photos) ? payload.photos.filter((photo) => typeof photo === 'string' && photo.trim()) : [];
   const surface = toNullableNumber(payload.surface);
   const boosterId = await getActiveBoosterId(payload.boost_service_id);
+
+  // nombre_pieces : NOT NULL varchar(10) côté depot_annonce — jamais vide
+  const nombrePiecesRaw = payload.nombre_pieces === '10+' ? '10' : String(payload.nombre_pieces || '').trim();
+  const nombrePiecesStr = nombrePiecesRaw || '2'; // 2 = minimum légal d'une colocation
+  const nombrePiecesNum = payload.nombre_pieces === '10+' ? 10 : toNullableNumber(payload.nombre_pieces);
+
+  // email : NOT NULL — déjà validé en amont par le contrôleur, filet de sécurité ici
+  const email = payload.email || 'non-renseigne@sarintany-coloc.mg';
 
   const annonceId = await insertAndGetId(
     `
@@ -49,15 +110,18 @@ async function createDepotAnnonce(userId, payload) {
     (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
      type_propriete, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
      longitude, booster)
-    VALUES (?, ?, ?, ?, 'pending', 'membre', 'complete', 'existante', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       userId,
       reference,
       titre,
       description,
+      typeBailleur,
+      modeAnnonce,
+      annonceTypeAnnonce,
       mapLogementToAnnonceType(logement),
-      payload.nombre_pieces === '10+' ? 10 : toNullableNumber(payload.nombre_pieces),
+      nombrePiecesNum,
       surface,
       payload.adresse || null,
       payload.quartier || null,
@@ -85,13 +149,13 @@ async function createDepotAnnonce(userId, payload) {
       payload.quartier || null,
       toNullableNumber(payload.latitude),
       toNullableNumber(payload.longitude),
-      typeAnnonce,
+      depotTypeAnnonce,
       logement,
-      payload.nombre_pieces || null,
+      nombrePiecesStr,
       surface,
       JSON.stringify(normalizeJsonArray(payload.commodites)),
       JSON.stringify(normalizeJsonArray(payload.regles)),
-      payload.email,
+      email,
       payload.telephone_code || '+261',
       payload.telephone || null,
       payload.message || null,
@@ -101,6 +165,10 @@ async function createDepotAnnonce(userId, payload) {
   );
 
   for (const room of rooms) {
+    const disponibleAPartir = room.disponible_a_partir || new Date().toISOString().slice(0, 10);
+    const meublee = normalizeMeublee(room.meublee);
+    const loyer = toNullableNumber(room.loyer) || 0;
+
     await query(
       `
       INSERT INTO depot_annonce_chambres
@@ -109,12 +177,12 @@ async function createDepotAnnonce(userId, payload) {
       `,
       [
         depotId,
-        room.disponible_a_partir || new Date().toISOString().slice(0, 10),
-        toNullableNumber(room.loyer) || 0,
+        disponibleAPartir,
+        loyer,
         toNullableNumber(room.charges),
         toNullableNumber(room.caution),
         toNullableNumber(room.surface),
-        room.meublee || null,
+        meublee,
       ]
     );
 
@@ -127,11 +195,11 @@ async function createDepotAnnonce(userId, payload) {
       [
         annonceId,
         toNullableNumber(room.surface),
-        room.meublee || null,
-        toNullableNumber(room.loyer) || 0,
+        meublee,
+        loyer,
         toNullableNumber(room.charges),
         toNullableNumber(room.caution),
-        room.disponible_a_partir || new Date().toISOString().slice(0, 10),
+        disponibleAPartir,
       ]
     );
   }
@@ -161,4 +229,3 @@ async function createDepotAnnonce(userId, payload) {
 module.exports = {
   createDepotAnnonce,
 };
-
