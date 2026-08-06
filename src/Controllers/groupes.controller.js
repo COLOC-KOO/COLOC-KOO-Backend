@@ -8,6 +8,7 @@ async function listGroups(req, res, next) {
               g.nom,
               g.id_createur,
               g.id_annonce,
+              g.est_cloture,
               g.date_creation,
               gm.role,
               last_msg.date_envoi AS date_dernier_message,
@@ -153,7 +154,7 @@ async function getMessages(req, res, next) {
     const rows = await query(
       `SELECT gm.*, u.nom AS expediteur_nom, u.prenom AS expediteur_prenom
        FROM groupe_messages gm
-       JOIN utilisateurs u ON u.id_utilisateur = gm.id_expediteur
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = gm.id_expediteur
        WHERE gm.id_groupe = ?
        ORDER BY gm.date_envoi ASC`,
       [groupId]
@@ -179,10 +180,14 @@ async function sendMessage(req, res, next) {
     if (!contenu) return res.status(400).json({ message: 'Contenu requis.' });
 
     const member = await query(
-      'SELECT 1 FROM groupe_membres WHERE id_groupe = ? AND id_utilisateur = ? LIMIT 1',
+      `SELECT gm.id_groupe, g.est_cloture
+       FROM groupe_membres gm
+       JOIN groupes_discussion g ON g.id_groupe = gm.id_groupe
+       WHERE gm.id_groupe = ? AND gm.id_utilisateur = ? LIMIT 1`,
       [groupId, req.user.id]
     );
     if (!member.length) return res.status(403).json({ message: 'Acces refuse.' });
+    if (member[0].est_cloture) return res.status(403).json({ message: 'Cette discussion est clôturée.' });
 
     const id = await insertAndGetId(
       'INSERT INTO groupe_messages (id_groupe, id_expediteur, contenu) VALUES (?, ?, ?)',
