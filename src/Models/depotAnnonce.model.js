@@ -5,9 +5,16 @@ const { getActiveBoosterId } = require('../Services/booster.service');
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+// function toNullableNumber(value) {
+//   if (value === undefined || value === null || value === '') return null;
+//   const numberValue = Number(value);
+//   return Number.isFinite(numberValue) ? numberValue : null;
+// }
+
 function toNullableNumber(value) {
   if (value === undefined || value === null || value === '') return null;
-  const numberValue = Number(value);
+  const cleaned = String(value).replace(/\s+/g, '').replace(/[^\d.-]/g, '');
+  const numberValue = Number(cleaned);
   return Number.isFinite(numberValue) ? numberValue : null;
 }
 
@@ -164,43 +171,86 @@ async function createDepotAnnonce(userId, payload) {
     ]
   );
 
+  // for (const room of rooms) {
+  //   const disponibleAPartir = room.disponible_a_partir || new Date().toISOString().slice(0, 10);
+  //   const meublee = normalizeMeublee(room.meublee);
+  //   const loyer = toNullableNumber(room.loyer) || 0;
+  //
+  //   await query(
+  //     `
+  //     INSERT INTO depot_annonce_chambres
+  //     (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
+  //     VALUES (?, ?, ?, ?, ?, ?, ?)
+  //     `,
+  //     [
+  //       depotId,
+  //       disponibleAPartir,
+  //       loyer,
+  //       toNullableNumber(room.charges),
+  //       toNullableNumber(room.caution),
+  //       toNullableNumber(room.surface),
+  //       meublee,
+  //     ]
+  //   );
+  //
+  //   await query(
+  //     `
+  //     INSERT INTO chambres
+  //     (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
+  //     VALUES (?, ?, ?, ?, ?, ?, ?)
+  //     `,
+  //     [
+  //       annonceId,
+  //       toNullableNumber(room.surface),
+  //       meublee,
+  //       loyer,
+  //       toNullableNumber(room.charges),
+  //       toNullableNumber(room.caution),
+  //       disponibleAPartir,
+  //     ]
+  //   );
+  // }
+
   for (const room of rooms) {
     const disponibleAPartir = room.disponible_a_partir || new Date().toISOString().slice(0, 10);
     const meublee = normalizeMeublee(room.meublee);
-    const loyer = toNullableNumber(room.loyer) || 0;
+    const loyer = toNullableNumber(room.loyer) ?? 0;
+    const charges = toNullableNumber(room.charges);
+    const caution = toNullableNumber(room.caution);
+    const surfaceChambre = toNullableNumber(room.surface);
 
     await query(
-      `
-      INSERT INTO depot_annonce_chambres
-      (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        depotId,
-        disponibleAPartir,
-        loyer,
-        toNullableNumber(room.charges),
-        toNullableNumber(room.caution),
-        toNullableNumber(room.surface),
-        meublee,
-      ]
+        `
+          INSERT INTO depot_annonce_chambres
+          (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          depotId,
+          disponibleAPartir,
+          loyer,
+          charges,
+          caution,
+          surfaceChambre,
+          meublee,
+        ]
     );
 
     await query(
-      `
-      INSERT INTO chambres
-      (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      `,
-      [
-        annonceId,
-        toNullableNumber(room.surface),
-        meublee,
-        loyer,
-        toNullableNumber(room.charges),
-        toNullableNumber(room.caution),
-        disponibleAPartir,
-      ]
+        `
+          INSERT INTO chambres
+          (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          annonceId,
+          surfaceChambre,
+          meublee,
+          loyer,
+          charges,
+          caution,
+          disponibleAPartir,
+        ]
     );
   }
 
