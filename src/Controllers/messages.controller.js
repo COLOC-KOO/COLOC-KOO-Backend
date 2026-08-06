@@ -9,10 +9,18 @@ async function listThreads(req, res, next) {
          COUNT(*) AS total_messages,
          SUM(CASE WHEN m.id_destinataire = ? AND m.est_lu = 0 THEN 1 ELSE 0 END) AS non_lus,
          MAX(CASE WHEN m.id_expediteur = ? THEN de.nom ELSE ex.nom END) AS interlocuteur_nom,
-         MAX(CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END) AS interlocuteur_prenom
+         MAX(CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END) AS interlocuteur_prenom,
+         MAX(a.titre) AS annonce_titre,
+         MAX(a.quartier) AS annonce_quartier,
+         MAX(v.nom_ville) AS annonce_ville,
+         MAX(a.prix_loyer) AS annonce_prix,
+         MIN(pa.url) AS annonce_photo
        FROM messages m
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
+       LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
+       LEFT JOIN villes v ON v.id_ville = a.id_ville
+       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
        WHERE m.id_expediteur = ? OR m.id_destinataire = ?
        GROUP BY interlocuteur_id
        ORDER BY dernier_message DESC`,
@@ -22,6 +30,11 @@ async function listThreads(req, res, next) {
       ...row,
       interlocuteur_nom: row.interlocuteur_nom || '',
       interlocuteur_prenom: row.interlocuteur_prenom || '',
+      annonce_titre: row.annonce_titre || null,
+      annonce_quartier: row.annonce_quartier || null,
+      annonce_ville: row.annonce_ville || null,
+      annonce_prix: row.annonce_prix || null,
+      annonce_photo: row.annonce_photo || null,
     })));
   } catch (err) {
     next(err);
