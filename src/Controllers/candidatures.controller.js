@@ -1,4 +1,9 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const {
+  ensureAcceptedColocDiscussionGroup,
+  notifyAcceptedColocGroup,
+  closeRejectedCandidateGroups,
+} = require('../Services/accepted-coloc-group.service');
 const { ensureContractContent } = require('./meta.controller');
 const mail = require('../Services/mail.service');
 
@@ -590,6 +595,7 @@ async function decide(req, res, next) {
     const equipeId = await ensureEquipeForAnnonce(candidature.id_annonce, candidature.titre);
 
     if (action === 'accept') {
+      const wasAlreadyValidated = ['signature', 'acceptee'].includes(String(candidature.statut));
       await query('UPDATE candidatures SET statut = ? WHERE id_candidature = ?', [normalizeStatus('acceptee'), candidatureId]);
       await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['selected', equipeId]);
       await query(
@@ -597,7 +603,27 @@ async function decide(req, res, next) {
          VALUES (?, ?, 'accepted')`,
         [equipeId, candidature.id_utilisateur]
       );
-      return res.json({ message: 'Candidature acceptée.', equipeId });
+
+      // La discussion est créée après l'acceptation. Une erreur de messagerie
+      // ne doit jamais annuler la décision déjà enregistrée.
+      let discussionGroup = null;
+      try {
+        discussionGroup = await ensureAcceptedColocDiscussionGroup({
+          annonceId: candidature.id_annonce,
+          ownerId: candidature.owner_id,
+          annonceTitre: candidature.titre,
+        });
+        if (!wasAlreadyValidated) {
+          await notifyAcceptedColocGroup({
+            group: discussionGroup,
+            realtime: req.app.get('realtime'),
+          });
+        }
+      } catch (groupError) {
+        console.error('Impossible de créer le groupe de discussion des colocataires acceptés:', groupError);
+      }
+
+      return res.json({ message: 'Candidature acceptée.', equipeId, discussionGroup });
     }
 
     if (action === 'refuse') {
@@ -608,6 +634,15 @@ async function decide(req, res, next) {
          VALUES (?, ?, 'refused')`,
         [equipeId, candidature.id_utilisateur]
       );
+      try {
+        await closeRejectedCandidateGroups({
+          annonceId: candidature.id_annonce,
+          candidateId: candidature.id_utilisateur,
+          realtime: req.app.get('realtime'),
+        });
+      } catch (groupError) {
+        console.error('Impossible de clôturer le groupe de candidature refusée:', groupError);
+      }
       return res.json({ message: 'Candidature refusée.', equipeId });
     }
   } catch (err) {
