@@ -8,4 +8,5 @@ JOIN candidatures c2
  AND c1.id_candidature > c2.id_candidature;
 
 ALTER TABLE candidatures
+  DROP INDEX IF EXISTS uniq_candidatures_user_annonce,
   ADD UNIQUE KEY uniq_candidatures_user_annonce (id_utilisateur, id_annonce);
