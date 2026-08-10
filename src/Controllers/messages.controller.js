@@ -34,7 +34,6 @@ async function listThreads(req, res, next) {
       annonce_titre: row.annonce_titre || null,
       annonce_quartier: row.annonce_quartier || null,
       annonce_ville: row.annonce_ville || null,
-      annonce_prix: row.annonce_prix || null,
       annonce_photo: row.annonce_photo || null,
     })));
   } catch (err) {
