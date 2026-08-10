@@ -343,7 +343,8 @@
     `engagement` text COLLATE utf8mb4_unicode_ci,
     `logo` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `actif` tinyint(1) NOT NULL DEFAULT '1',
-    `date_creation` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+    `date_creation` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id_partenaire`)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
   --
@@ -726,12 +727,6 @@ CREATE TABLE `campagnes` (
     ADD KEY `fk_paiements_annonce` (`id_annonce`),
     ADD KEY `idx_paiements_date` (`date_paiement`),
     ADD KEY `idx_paiements_statut` (`statut`);
-
-  --
-  -- Indexes for table `partenaires`
-  --
-  ALTER TABLE `partenaires`
-    ADD PRIMARY KEY (`id_partenaire`);
 
   --
   -- Indexes for table `parties_contrats`
