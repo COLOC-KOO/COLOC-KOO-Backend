@@ -13,11 +13,13 @@ async function listThreads(req, res, next) {
          MAX(a.titre) AS annonce_titre,
          MAX(a.quartier) AS annonce_quartier,
          MAX(v.nom_ville) AS annonce_ville,
+         MIN(ch.prix_loyer) AS annonce_prix,
          MIN(pa.url) AS annonce_photo
        FROM messages m
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
+       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
        LEFT JOIN villes v ON v.id_ville = a.id_ville
        LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
        WHERE m.id_expediteur = ? OR m.id_destinataire = ?
