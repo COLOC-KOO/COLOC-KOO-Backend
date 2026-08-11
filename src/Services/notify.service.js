@@ -104,4 +104,5 @@ async function notifyUser(userId, { titre, texte, lien = null, type = 'systeme',
   }
 }
 
+
 module.exports = { notifyStaff, notifyUser, getStaffRecipients };
