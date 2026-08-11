@@ -1,3 +1,4 @@
+/* Server */
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -7,6 +8,9 @@ const { attachRealtime } = require('./Services/realtime.service');
 
 const PORT = process.env.PORT || 4000;
 const app = createApp();
+
+// ✅ Les routes des alertes sont maintenant dans app.js
+// (avant le middleware notFound, pour qu'elles soient bien atteignables)
 
 async function start() {
   await testConnection();
