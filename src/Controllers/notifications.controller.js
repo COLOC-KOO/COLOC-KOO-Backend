@@ -5,7 +5,7 @@ async function listMine(req, res, next) {
     const rows = await query('SELECT * FROM notifications WHERE id_utilisateur = ? ORDER BY date_creation DESC', [req.user.id]);
     res.json(rows);
   } catch (err) {
-    next(err);
+    next(err);  
   }
 }
 
