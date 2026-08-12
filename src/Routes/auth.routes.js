@@ -23,5 +23,11 @@ router.get('/me', requireAuth, controller.me);
 router.patch('/me', requireAuth, controller.updateMe);
 router.post('/me/upload', requireAuth, upload.single('photo'), controller.uploadProfilePicture);
 router.patch('/me/password', requireAuth, controller.changePassword);
+router.patch('/me/security', requireAuth, controller.updateSecuritySettings);
+router.delete('/me', requireAuth, controller.deleteAccount);
+
+// appareils connectes (sessions reelles)
+router.get('/me/sessions', requireAuth, controller.listSessions);
+router.post('/me/sessions/revoke-others', requireAuth, controller.revokeOtherSessions);
 
 module.exports = router;
