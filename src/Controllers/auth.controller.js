@@ -77,6 +77,19 @@ function formatRelativeDate(value) {
   return `il y a ${days} jours`;
 }
 
+// Convertit une valeur (string 'YYYY-MM-DD' ou Date) en Date valide, sinon null
+function parseBirthDate(rawValue) {
+  if (!rawValue) return null;
+  if (rawValue instanceof Date) {
+    return Number.isNaN(rawValue.getTime()) ? null : rawValue;
+  }
+  if (typeof rawValue === 'string' && rawValue.trim()) {
+    const parsed = new Date(rawValue);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
 async function register(req, res, next) {
   try {
     const {
@@ -88,13 +101,18 @@ async function register(req, res, next) {
       cin = null,
       id_role,
       poste = 'colocataire',
-      age = null,
+      date_naissance = null,
       profession = null,
       bio = null,
     } = req.body;
 
-    if (!email || !mot_de_passe || !nom || !prenom) {
+    if (!email || !mot_de_passe || !nom || !prenom || !date_naissance) {
       return res.status(400).json({ message: 'Champs obligatoires manquants.' });
+    }
+
+    const birthDate = parseBirthDate(date_naissance);
+    if (!birthDate) {
+      return res.status(400).json({ message: 'Date de naissance invalide.' });
     }
 
     const exists = await query('SELECT id_utilisateur FROM utilisateurs WHERE email = ? LIMIT 1', [email]);
@@ -104,11 +122,12 @@ async function register(req, res, next) {
 
     const roleId = id_role || (await resolveRoleId(poste));
     const hash = await bcrypt.hash(mot_de_passe, 10);
+    const age = computeAge(birthDate);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
-       (email, telephone, cin, mot_de_passe, nom, prenom, age, bio, profession, id_role)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, cin, hash, nom, prenom, age, bio, profession, roleId]
+       (email, telephone, cin, mot_de_passe, nom, prenom, date_naissance, age, bio, profession, id_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [email, telephone, cin, hash, nom, prenom, birthDate.toISOString().slice(0, 10), age, bio, profession, roleId]
     );
 
     const user = await getUserById(id);
@@ -209,16 +228,7 @@ async function updateMe(req, res, next) {
     const body = req.body || {};
 
     if (body.date_naissance !== undefined) {
-      const rawValue = body.date_naissance;
-      let birthDate = null;
-      if (typeof rawValue === 'string' && rawValue.trim()) {
-        const parsed = new Date(rawValue);
-        if (!Number.isNaN(parsed.getTime())) {
-          birthDate = parsed;
-        }
-      } else if (rawValue instanceof Date) {
-        birthDate = rawValue;
-      }
+      const birthDate = parseBirthDate(body.date_naissance);
       const age = birthDate ? computeAge(birthDate) : null;
       pairs.push('date_naissance = ?');
       values.push(birthDate ? birthDate.toISOString().slice(0, 10) : null);
@@ -470,6 +480,33 @@ async function revokeOtherSessions(req, res, next) {
   }
 }
 
+// ✅ AJOUT : Fonction pour récupérer la liste des villes
+async function getVilles(req, res, next) {
+  try {
+    const rows = await query('SELECT id_ville, nom_ville FROM villes ORDER BY nom_ville ASC');
+    res.json(rows);
+  } catch (err) {
+    console.error('Erreur lors du chargement des villes:', err);
+    res.status(500).json({ message: 'Impossible de charger la liste des villes.' });
+  }
+}
+async function getVilleById(req, res, next) {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT nom_ville FROM villes WHERE id_ville = ?', [id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Ville non trouvée' });
+    }
+    
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Erreur lors de la récupération de la ville:', err);
+    res.status(500).json({ message: 'Impossible de récupérer la ville.' });
+  }
+}
+
+
 module.exports = {
   register,
   login,
@@ -481,5 +518,7 @@ module.exports = {
   updateSecuritySettings,
   deleteAccount,
   listSessions,
-  revokeOtherSessions
+  revokeOtherSessions,
+  getVilles,
+  getVilleById  
 };
