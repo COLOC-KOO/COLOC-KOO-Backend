@@ -24,6 +24,9 @@
     verification: Boolean(row.est_verifie),
     statut: row.statut,
     createdAt: row.date_inscription,
+    rgpd_analytics: Number(row.rgpd_analytics ?? 0),
+    rgpd_partenaires: Number(row.rgpd_partenaires ?? 0),
+    two_fa_enabled: Number(row.two_fa_enabled ?? 0),
   };
 }
 

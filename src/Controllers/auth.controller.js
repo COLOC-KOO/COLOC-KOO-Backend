@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
@@ -20,6 +21,60 @@ async function resolveRoleId(posteOrRole) {
   const normalized = ROLE_ALIASES[String(posteOrRole || 'colocataire').trim()] || 'coloc';
   const rows = await query('SELECT id_role FROM roles WHERE nom_role = ? LIMIT 1', [normalized]);
   return rows[0]?.id_role || 1;
+}
+
+// Detecte le type d'appareil + libelle a partir du User-Agent
+function detectDevice(userAgent) {
+  const ua = String(userAgent || '');
+  const isMobile = /android|iphone|ipod|mobile/i.test(ua);
+
+  let os = 'Appareil';
+  if (/windows/i.test(ua)) os = 'Windows';
+  else if (/mac os/i.test(ua)) os = 'macOS';
+  else if (/android/i.test(ua)) os = 'Android';
+  else if (/iphone|ipad/i.test(ua)) os = 'iOS';
+  else if (/linux/i.test(ua)) os = 'Linux';
+
+  let browser = 'Navigateur';
+  if (/edg\//i.test(ua)) browser = 'Edge';
+  else if (/firefox/i.test(ua)) browser = 'Firefox';
+  else if (/chrome|chromium/i.test(ua)) browser = 'Chrome';
+  else if (/safari/i.test(ua)) browser = 'Safari';
+
+  return { type: isMobile ? 'mobile' : 'desktop', label: `${browser} / ${os}` };
+}
+
+// Cree une session en base et renvoie son session_id
+// ✅ CORRECTION : remplace l'ancienne session du MEME appareil (evite les doublons)
+async function createSession(userId, req) {
+  const sessionId = crypto.randomUUID();
+  const device = detectDevice(req.headers['user-agent']);
+
+  // Supprime la precedente session de cet appareil avant d'en creer une nouvelle
+  await query(
+    'DELETE FROM sessions WHERE id_utilisateur = ? AND type_appareil = ? AND label = ?',
+    [userId, device.type, device.label]
+  );
+
+  await query(
+    `INSERT INTO sessions (id_utilisateur, session_id, type_appareil, label, dernier_usage)
+     VALUES (?, ?, ?, ?, NOW())`,
+    [userId, sessionId, device.type, device.label]
+  );
+  return sessionId;
+}
+
+// "il y a 3 jours", "il y a 5 min"... pour les autres appareils
+function formatRelativeDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const diffMin = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (diffMin < 1) return "a l'instant";
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const hours = Math.floor(diffMin / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `il y a ${days} jours`;
 }
 
 async function register(req, res, next) {
@@ -57,7 +112,15 @@ async function register(req, res, next) {
     );
 
     const user = await getUserById(id);
-    const token = signToken(user);
+
+    let token;
+    try {
+      const sessionId = await createSession(id, req);
+      token = signToken(user, sessionId);
+    } catch (sessionError) {
+      console.warn('[auth] Session non creee:', sessionError.message);
+      token = signToken(user);
+    }
 
     try {
       await mail.sendEmail(
@@ -110,7 +173,16 @@ async function login(req, res, next) {
     }
 
     const user = mapUserRow(userRow);
-    const token = signToken(user);
+
+    let token;
+    try {
+      const sessionId = await createSession(user.id, req);
+      token = signToken(user, sessionId);
+    } catch (sessionError) {
+      console.warn('[auth] Session non creee:', sessionError.message);
+      token = signToken(user);
+    }
+
     await query('UPDATE utilisateurs SET derniere_connexion = NOW() WHERE id_utilisateur = ?', [user.id]);
 
     res.json({ user, token });
@@ -272,4 +344,120 @@ async function getUserById(id) {
   return mapUserRow(rows[0]);
 }
 
-module.exports = { register, login, me, updateMe, uploadProfilePicture, changePassword };
+async function updateSecuritySettings(req, res, next) {
+  try {
+    const allowed = ['two_fa_enabled', 'rgpd_analytics', 'rgpd_partenaires'];
+    const pairs = [];
+    const values = [];
+    const body = req.body || {};
+
+    for (const key of allowed) {
+      if (body[key] !== undefined) {
+        pairs.push(`${key} = ?`);
+        values.push(body[key] ? 1 : 0);
+      }
+    }
+
+    if (pairs.length === 0) {
+      return res.status(400).json({ message: 'Aucune modification fournie.' });
+    }
+
+    values.push(req.user.id);
+    await query(`UPDATE utilisateurs SET ${pairs.join(', ')} WHERE id_utilisateur = ?`, values);
+
+    const user = await getUserById(req.user.id);
+    res.json({ message: 'Parametres mis a jour.', user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteAccount(req, res, next) {
+  try {
+    const userId = req.user.id;
+
+    await query('DELETE FROM sessions WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM favoris WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM candidatures WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM recherches_sauvegardees WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM notifications WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM messages WHERE id_expediteur = ? OR id_destinataire = ?', [userId, userId]);
+    await query('DELETE FROM depot_annonce WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM annonces WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM utilisateurs WHERE id_utilisateur = ?', [userId]);
+
+    res.json({ message: 'Compte supprime definitivement.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listSessions(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT id_session, session_id, type_appareil, label, dernier_usage
+       FROM sessions
+       WHERE id_utilisateur = ?
+       ORDER BY dernier_usage DESC`,
+      [req.user.id]
+    );
+
+    const currentSessionId = req.user.session_id || null;
+
+    const sessions = rows.map((row) => {
+      const courant = currentSessionId ? row.session_id === currentSessionId : false;
+      return {
+        id: String(row.id_session),
+        type: row.type_appareil === 'mobile' ? 'mobile' : 'desktop',
+        label: row.label || 'Appareil',
+        lieu: courant ? null : formatRelativeDate(row.dernier_usage),
+        courant,
+      };
+    });
+
+    // Token ancien (sans session) : on affiche quand meme l'appareil actuel
+    if (!currentSessionId) {
+      const device = detectDevice(req.headers['user-agent']);
+      sessions.unshift({
+        id: 'current',
+        type: device.type,
+        label: device.label,
+        lieu: null,
+        courant: true,
+      });
+    }
+
+    res.json(sessions);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revokeOtherSessions(req, res, next) {
+  try {
+    const currentSessionId = req.user.session_id || null;
+
+    if (currentSessionId) {
+      await query('DELETE FROM sessions WHERE id_utilisateur = ? AND session_id != ?', [req.user.id, currentSessionId]);
+    } else {
+      await query('DELETE FROM sessions WHERE id_utilisateur = ?', [req.user.id]);
+    }
+
+    res.json({ message: 'Autres appareils deconnectes.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  register,
+  login,
+  me,
+  updateMe,
+  uploadProfilePicture,
+  changePassword,
+  updateSecuritySettings,
+  deleteAccount,
+  listSessions,
+  revokeOtherSessions
+};
