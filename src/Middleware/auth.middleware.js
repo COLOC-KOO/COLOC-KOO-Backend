@@ -81,9 +81,7 @@ function requireRole(...roles) {
     if (!allowed.includes(userRole)) {
       return res.status(403).json({ message: 'Acces refuse.' });
     }
-
     return next();
   };
 }
-
 module.exports = { requireAuth, requireRole, normalizeRole, optionalAuth };
