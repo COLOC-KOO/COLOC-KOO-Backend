@@ -31,4 +31,10 @@ router.delete('/me', requireAuth, controller.deleteAccount);
 router.get('/me/sessions', requireAuth, controller.listSessions);
 router.post('/me/sessions/revoke-others', requireAuth, controller.revokeOtherSessions);
 
+// ✅ AJOUT : Route pour récupérer une ville par son ID (DOIT être AVANT /villes)
+router.get('/villes/:id', requireAuth, controller.getVilleById);
+
+// ✅ Route pour récupérer la liste des villes (DOIT être APRÈS /villes/:id)
+router.get('/villes', requireAuth, controller.getVilles);
+
 module.exports = router;
