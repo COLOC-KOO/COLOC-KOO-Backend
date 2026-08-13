@@ -5,37 +5,80 @@ async function listThreads(req, res, next) {
     const rows = await query(
       `SELECT
          CASE WHEN m.id_expediteur = ? THEN m.id_destinataire ELSE m.id_expediteur END AS interlocuteur_id,
-         MAX(m.date_envoi) AS dernier_message,
+         m.id_annonce,
+         m.contenu AS dernier_message,
+         m.date_envoi AS date_dernier_message,
+         (m.id_expediteur = ?) AS est_dernier_message_mien,
          COUNT(*) AS total_messages,
          SUM(CASE WHEN m.id_destinataire = ? AND m.est_lu = 0 THEN 1 ELSE 0 END) AS non_lus,
-         MAX(CASE WHEN m.id_expediteur = ? THEN de.nom ELSE ex.nom END) AS interlocuteur_nom,
-         MAX(CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END) AS interlocuteur_prenom,
-         MAX(a.titre) AS annonce_titre,
-         MAX(a.quartier) AS annonce_quartier,
-         MAX(v.nom_ville) AS annonce_ville,
+         
+         /* Nom et prénom du propriétaire de l'annonce */
+         prop.nom AS proprietaire_nom,
+         prop.prenom AS proprietaire_prenom,
+         
+         /* Nom et prénom de l'interlocuteur */
+         CASE WHEN m.id_expediteur = ? THEN de.nom ELSE ex.nom END AS interlocuteur_nom,
+         CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END AS interlocuteur_prenom,
+         
+         a.titre AS annonce_titre,
+         a.quartier AS annonce_quartier,
+         v.nom_ville AS annonce_ville,
          MIN(ch.prix_loyer) AS annonce_prix,
          MIN(pa.url) AS annonce_photo
        FROM messages m
+       INNER JOIN (
+         /* Sous-requête pour récupérer le dernier message exact par fil de discussion */
+         SELECT 
+           CASE WHEN id_expediteur = ? THEN id_destinataire ELSE id_expediteur END AS sub_interlocuteur,
+           MAX(id_message) AS max_id_message
+         FROM messages
+         WHERE id_expediteur = ? OR id_destinataire = ?
+         GROUP BY sub_interlocuteur
+       ) last_msg ON m.id_message = last_msg.max_id_message
+       
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
+       /* Jointure pour récupérer le propriétaire de l'annonce */
+       LEFT JOIN utilisateurs prop ON prop.id_utilisateur = a.id_utilisateur
        LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
        LEFT JOIN villes v ON v.id_ville = a.id_ville
        LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
        WHERE m.id_expediteur = ? OR m.id_destinataire = ?
-       GROUP BY interlocuteur_id
-       ORDER BY dernier_message DESC`,
-      [req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, req.user.id]
+       GROUP BY m.id_message, interlocuteur_id
+       ORDER BY m.date_envoi DESC`,
+      [
+        req.user.id, // Pour est_dernier_message_mien
+        req.user.id, // Pour non_lus
+        req.user.id, // Pour non_lus
+        req.user.id, // Pour interlocuteur_nom
+        req.user.id, // Pour interlocuteur_prenom
+        req.user.id, // Sous-requête sub_interlocuteur
+        req.user.id, // Sous-requête WHERE
+        req.user.id, // Sous-requête WHERE
+        req.user.id, // Main WHERE
+        req.user.id  // Main WHERE
+      ]
     );
-    res.json(rows.map((row) => ({
-      ...row,
-      interlocuteur_nom: row.interlocuteur_nom || '',
-      interlocuteur_prenom: row.interlocuteur_prenom || '',
-      annonce_titre: row.annonce_titre || null,
-      annonce_quartier: row.annonce_quartier || null,
-      annonce_ville: row.annonce_ville || null,
-      annonce_photo: row.annonce_photo || null,
-    })));
+
+    res.json(rows.map((row) => {
+      const pNom = [row.proprietaire_nom, row.proprietaire_prenom].filter(Boolean).join(' ').trim();
+      const iNom = [row.interlocuteur_nom, row.interlocuteur_prenom].filter(Boolean).join(' ').trim();
+
+      return {
+        ...row,
+        id_annonce: row.id_annonce || null,
+        proprietaire_nom: pNom || iNom || 'Propriétaire',
+        interlocuteur_nom: iNom || '',
+        dernier_message: row.dernier_message || '',
+        date_dernier_message: row.date_dernier_message,
+        est_dernier_message_mien: Boolean(row.est_dernier_message_mien),
+        annonce_titre: row.annonce_titre || null,
+        annonce_quartier: row.annonce_quartier || null,
+        annonce_ville: row.annonce_ville || null,
+        annonce_photo: row.annonce_photo || null,
+      };
+    }));
   } catch (err) {
     next(err);
   }
@@ -143,5 +186,4 @@ async function removeMessage(req, res, next) {
     next(err);
   }
 }
-
 module.exports = { listThreads, getThread, send, report, removeMessage, removeThread };
