@@ -344,6 +344,27 @@ async function getUserById(id) {
   return mapUserRow(rows[0]);
 }
 
+// ===== AJOUT : lecture des parametres de securite (2FA) enregistres en DB =====
+async function getSecuritySettings(req, res, next) {
+  try {
+    const rows = await query(
+      'SELECT two_fa_enabled FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
+      [req.user.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    res.json({
+      two_fa_enabled: !!rows[0].two_fa_enabled,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+// ===== FIN AJOUT =====
+
 async function updateSecuritySettings(req, res, next) {
   try {
     const allowed = ['two_fa_enabled', 'rgpd_analytics', 'rgpd_partenaires'];
@@ -376,7 +397,7 @@ async function deleteAccount(req, res, next) {
   try {
     const userId = req.user.id;
 
-    await query('DELETE FROM sessions WHERE id_utilisateur = ?', [userId]);
+    // await query('DELETE FROM sessions WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM favoris WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM candidatures WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM recherches_sauvegardees WHERE id_utilisateur = ?', [userId]);
@@ -456,6 +477,7 @@ module.exports = {
   updateMe,
   uploadProfilePicture,
   changePassword,
+  getSecuritySettings,
   updateSecuritySettings,
   deleteAccount,
   listSessions,
