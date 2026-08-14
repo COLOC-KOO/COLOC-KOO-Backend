@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
@@ -22,6 +23,73 @@ async function resolveRoleId(posteOrRole) {
   return rows[0]?.id_role || 1;
 }
 
+// Detecte le type d'appareil + libelle a partir du User-Agent
+function detectDevice(userAgent) {
+  const ua = String(userAgent || '');
+  const isMobile = /android|iphone|ipod|mobile/i.test(ua);
+
+  let os = 'Appareil';
+  if (/windows/i.test(ua)) os = 'Windows';
+  else if (/mac os/i.test(ua)) os = 'macOS';
+  else if (/android/i.test(ua)) os = 'Android';
+  else if (/iphone|ipad/i.test(ua)) os = 'iOS';
+  else if (/linux/i.test(ua)) os = 'Linux';
+
+  let browser = 'Navigateur';
+  if (/edg\//i.test(ua)) browser = 'Edge';
+  else if (/firefox/i.test(ua)) browser = 'Firefox';
+  else if (/chrome|chromium/i.test(ua)) browser = 'Chrome';
+  else if (/safari/i.test(ua)) browser = 'Safari';
+
+  return { type: isMobile ? 'mobile' : 'desktop', label: `${browser} / ${os}` };
+}
+
+// Cree une session en base et renvoie son session_id
+// ✅ CORRECTION : remplace l'ancienne session du MEME appareil (evite les doublons)
+async function createSession(userId, req) {
+  const sessionId = crypto.randomUUID();
+  const device = detectDevice(req.headers['user-agent']);
+
+  // Supprime la precedente session de cet appareil avant d'en creer une nouvelle
+  await query(
+    'DELETE FROM sessions WHERE id_utilisateur = ? AND type_appareil = ? AND label = ?',
+    [userId, device.type, device.label]
+  );
+
+  await query(
+    `INSERT INTO sessions (id_utilisateur, session_id, type_appareil, label, dernier_usage)
+     VALUES (?, ?, ?, ?, NOW())`,
+    [userId, sessionId, device.type, device.label]
+  );
+  return sessionId;
+}
+
+// "il y a 3 jours", "il y a 5 min"... pour les autres appareils
+function formatRelativeDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const diffMin = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (diffMin < 1) return "a l'instant";
+  if (diffMin < 60) return `il y a ${diffMin} min`;
+  const hours = Math.floor(diffMin / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `il y a ${days} jours`;
+}
+
+// Convertit une valeur (string 'YYYY-MM-DD' ou Date) en Date valide, sinon null
+function parseBirthDate(rawValue) {
+  if (!rawValue) return null;
+  if (rawValue instanceof Date) {
+    return Number.isNaN(rawValue.getTime()) ? null : rawValue;
+  }
+  if (typeof rawValue === 'string' && rawValue.trim()) {
+    const parsed = new Date(rawValue);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
 async function register(req, res, next) {
   try {
     const {
@@ -33,13 +101,18 @@ async function register(req, res, next) {
       cin = null,
       id_role,
       poste = 'colocataire',
-      age = null,
+      date_naissance = null,
       profession = null,
       bio = null,
     } = req.body;
 
-    if (!email || !mot_de_passe || !nom || !prenom) {
+    if (!email || !mot_de_passe || !nom || !prenom || !date_naissance) {
       return res.status(400).json({ message: 'Champs obligatoires manquants.' });
+    }
+
+    const birthDate = parseBirthDate(date_naissance);
+    if (!birthDate) {
+      return res.status(400).json({ message: 'Date de naissance invalide.' });
     }
 
     const exists = await query('SELECT id_utilisateur FROM utilisateurs WHERE email = ? LIMIT 1', [email]);
@@ -49,15 +122,24 @@ async function register(req, res, next) {
 
     const roleId = id_role || (await resolveRoleId(poste));
     const hash = await bcrypt.hash(mot_de_passe, 10);
+    const age = computeAge(birthDate);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
-       (email, telephone, cin, mot_de_passe, nom, prenom, age, bio, profession, id_role)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, cin, hash, nom, prenom, age, bio, profession, roleId]
+       (email, telephone, cin, mot_de_passe, nom, prenom, date_naissance, age, bio, profession, id_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [email, telephone, cin, hash, nom, prenom, birthDate.toISOString().slice(0, 10), age, bio, profession, roleId]
     );
 
     const user = await getUserById(id);
-    const token = signToken(user);
+
+    let token;
+    try {
+      const sessionId = await createSession(id, req);
+      token = signToken(user, sessionId);
+    } catch (sessionError) {
+      console.warn('[auth] Session non creee:', sessionError.message);
+      token = signToken(user);
+    }
 
     try {
       await mail.sendEmail(
@@ -110,7 +192,16 @@ async function login(req, res, next) {
     }
 
     const user = mapUserRow(userRow);
-    const token = signToken(user);
+
+    let token;
+    try {
+      const sessionId = await createSession(user.id, req);
+      token = signToken(user, sessionId);
+    } catch (sessionError) {
+      console.warn('[auth] Session non creee:', sessionError.message);
+      token = signToken(user);
+    }
+
     await query('UPDATE utilisateurs SET derniere_connexion = NOW() WHERE id_utilisateur = ?', [user.id]);
 
     res.json({ user, token });
@@ -137,16 +228,7 @@ async function updateMe(req, res, next) {
     const body = req.body || {};
 
     if (body.date_naissance !== undefined) {
-      const rawValue = body.date_naissance;
-      let birthDate = null;
-      if (typeof rawValue === 'string' && rawValue.trim()) {
-        const parsed = new Date(rawValue);
-        if (!Number.isNaN(parsed.getTime())) {
-          birthDate = parsed;
-        }
-      } else if (rawValue instanceof Date) {
-        birthDate = rawValue;
-      }
+      const birthDate = parseBirthDate(body.date_naissance);
       const age = birthDate ? computeAge(birthDate) : null;
       pairs.push('date_naissance = ?');
       values.push(birthDate ? birthDate.toISOString().slice(0, 10) : null);
@@ -272,4 +354,171 @@ async function getUserById(id) {
   return mapUserRow(rows[0]);
 }
 
-module.exports = { register, login, me, updateMe, uploadProfilePicture, changePassword };
+// ===== AJOUT : lecture des parametres de securite (2FA) enregistres en DB =====
+async function getSecuritySettings(req, res, next) {
+  try {
+    const rows = await query(
+      'SELECT two_fa_enabled FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
+      [req.user.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    res.json({
+      two_fa_enabled: !!rows[0].two_fa_enabled,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+// ===== FIN AJOUT =====
+
+async function updateSecuritySettings(req, res, next) {
+  try {
+    const allowed = ['two_fa_enabled', 'rgpd_analytics', 'rgpd_partenaires'];
+    const pairs = [];
+    const values = [];
+    const body = req.body || {};
+
+    for (const key of allowed) {
+      if (body[key] !== undefined) {
+        pairs.push(`${key} = ?`);
+        values.push(body[key] ? 1 : 0);
+      }
+    }
+
+    if (pairs.length === 0) {
+      return res.status(400).json({ message: 'Aucune modification fournie.' });
+    }
+
+    values.push(req.user.id);
+    await query(`UPDATE utilisateurs SET ${pairs.join(', ')} WHERE id_utilisateur = ?`, values);
+
+    const user = await getUserById(req.user.id);
+    res.json({ message: 'Parametres mis a jour.', user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteAccount(req, res, next) {
+  try {
+    const userId = req.user.id;
+
+    // await query('DELETE FROM sessions WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM favoris WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM candidatures WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM recherches_sauvegardees WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM notifications WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM messages WHERE id_expediteur = ? OR id_destinataire = ?', [userId, userId]);
+    await query('DELETE FROM depot_annonce WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM annonces WHERE id_utilisateur = ?', [userId]);
+    await query('DELETE FROM utilisateurs WHERE id_utilisateur = ?', [userId]);
+
+    res.json({ message: 'Compte supprime definitivement.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listSessions(req, res, next) {
+  try {
+    const rows = await query(
+      `SELECT id_session, session_id, type_appareil, label, dernier_usage
+       FROM sessions
+       WHERE id_utilisateur = ?
+       ORDER BY dernier_usage DESC`,
+      [req.user.id]
+    );
+
+    const currentSessionId = req.user.session_id || null;
+
+    const sessions = rows.map((row) => {
+      const courant = currentSessionId ? row.session_id === currentSessionId : false;
+      return {
+        id: String(row.id_session),
+        type: row.type_appareil === 'mobile' ? 'mobile' : 'desktop',
+        label: row.label || 'Appareil',
+        lieu: courant ? null : formatRelativeDate(row.dernier_usage),
+        courant,
+      };
+    });
+
+    // Token ancien (sans session) : on affiche quand meme l'appareil actuel
+    if (!currentSessionId) {
+      const device = detectDevice(req.headers['user-agent']);
+      sessions.unshift({
+        id: 'current',
+        type: device.type,
+        label: device.label,
+        lieu: null,
+        courant: true,
+      });
+    }
+
+    res.json(sessions);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function revokeOtherSessions(req, res, next) {
+  try {
+    const currentSessionId = req.user.session_id || null;
+
+    if (currentSessionId) {
+      await query('DELETE FROM sessions WHERE id_utilisateur = ? AND session_id != ?', [req.user.id, currentSessionId]);
+    } else {
+      await query('DELETE FROM sessions WHERE id_utilisateur = ?', [req.user.id]);
+    }
+
+    res.json({ message: 'Autres appareils deconnectes.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ✅ AJOUT : Fonction pour récupérer la liste des villes
+async function getVilles(req, res, next) {
+  try {
+    const rows = await query('SELECT id_ville, nom_ville FROM villes ORDER BY nom_ville ASC');
+    res.json(rows);
+  } catch (err) {
+    console.error('Erreur lors du chargement des villes:', err);
+    res.status(500).json({ message: 'Impossible de charger la liste des villes.' });
+  }
+}
+async function getVilleById(req, res, next) {
+  try {
+    const { id } = req.params;
+    const rows = await query('SELECT nom_ville FROM villes WHERE id_ville = ?', [id]);
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Ville non trouvée' });
+    }
+    
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Erreur lors de la récupération de la ville:', err);
+    res.status(500).json({ message: 'Impossible de récupérer la ville.' });
+  }
+}
+
+
+module.exports = {
+  register,
+  login,
+  me,
+  updateMe,
+  uploadProfilePicture,
+  changePassword,
+  getSecuritySettings,
+  updateSecuritySettings,
+  deleteAccount,
+  listSessions,
+  revokeOtherSessions,
+  getVilles,
+  getVilleById  
+};

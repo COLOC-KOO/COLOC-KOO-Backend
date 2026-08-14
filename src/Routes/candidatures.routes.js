@@ -16,7 +16,7 @@ router.get('/annonce/:id/mes-contrats', requireAuth, controller.myContractsForAn
 router.post('/annonce/:id/lancer-officiel', requireAuth, controller.lancerColocationOfficielle);
 router.get('/admin/all', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.listAll);
 router.patch('/:id/status', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.updateStatus);
-
+router.get('/depot-annonce/:id', controller.listByAnnonce);
 // ✅ NOUVELLES ROUTES - CORRIGÉES (sans /candidatures en double)
 // Routes publiques ou avec authentification OPTIONNELLE
 router.get('/annonce/:id', controller.listByAnnonce); // ✅ Public

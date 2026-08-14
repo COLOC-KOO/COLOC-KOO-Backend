@@ -10,11 +10,14 @@ function typeValide(type) {
 
 // Insere une ligne dans `notifications` (best-effort).
 async function insertInApp(userId, type, titre, texte, lien) {
+  console.log('[notify] insertInApp() -> userId:', userId, '| type:', typeValide(type), '| titre:', titre);
   await query(
     `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
      VALUES (?, ?, ?, ?, ?)`,
     [userId, typeValide(type), titre, texte, lien]
-  ).catch(() => {});
+  ).catch((err) => {
+    console.error('[notify] insertInApp() ECHEC pour userId:', userId, '-', err.message);
+  });
 }
 
 // Construit le HTML final d'un email de notification (corps + bouton),
@@ -49,22 +52,30 @@ const STAFF_ROLES = ['admin', 'super_admin'];
 async function getStaffRecipients(roles = STAFF_ROLES) {
   const list = Array.isArray(roles) && roles.length ? roles : STAFF_ROLES;
   const placeholders = list.map(() => '?').join(',');
-  return query(
+  console.log('[notify] getStaffRecipients() -> roles recherches:', list);
+  const rows = await query(
     `SELECT u.id_utilisateur, u.email, u.prenom, u.nom
      FROM utilisateurs u
      JOIN roles r ON r.id_role = u.id_role
      WHERE r.nom_role IN (${placeholders}) AND u.statut = 'active'`,
     list
   );
+  console.log('[notify] getStaffRecipients() -> resultat :', rows.length, 'utilisateur(s) trouve(s)');
+  rows.forEach((r) => console.log('[notify]   -', r.email, '(id:', r.id_utilisateur + ')'));
+  return rows;
 }
 
 // Notifie le staff : in-app + un email groupe. Par defaut admin + super_admin ;
 // passer `roles` pour cibler d'autres roles (ex. ['moderator','admin','super_admin']).
 // Options : voir l'entete du fichier.
 async function notifyStaff({ titre, texte, lien = null, type = 'systeme', intro = null, details = null, contenuHtml = null, action = null, roles = STAFF_ROLES }) {
+  console.log('[notify] notifyStaff() appele -> titre:', titre, '| roles:', roles);
   try {
     const staff = await getStaffRecipients(roles);
-    if (!staff.length) return;
+    if (!staff.length) {
+      console.warn('[notify] notifyStaff() -> AUCUN staff trouve pour les roles:', roles, '. Verifie la table roles/utilisateurs (statut = active ?).');
+      return;
+    }
 
     // 1) In-app pour chaque membre du staff.
     for (const s of staff) {
@@ -73,12 +84,16 @@ async function notifyStaff({ titre, texte, lien = null, type = 'systeme', intro 
 
     // 2) Email groupe (best-effort).
     const emails = [...new Set(staff.map((s) => s.email).filter(Boolean))];
+    console.log('[notify] notifyStaff() -> emails cibles pour l\'envoi groupe :', emails);
     if (emails.length) {
       const html = buildEmailHtml({ titre, texte, intro, details, contenuHtml, lien, action });
-      await mail.sendEmail(emails, titre, html, texte);
+      const ok = await mail.sendEmail(emails, titre, html, texte);
+      console.log('[notify] notifyStaff() -> mail.sendEmail() a retourne :', ok);
+    } else {
+      console.warn('[notify] notifyStaff() -> aucun email valide parmi le staff, envoi annule.');
     }
   } catch (err) {
-    console.error('[notify] notifyStaff:', err.message);
+    console.error('[notify] notifyStaff() ECHEC GENERAL :', err.message);
   }
 }
 
@@ -86,8 +101,12 @@ async function notifyStaff({ titre, texte, lien = null, type = 'systeme', intro 
 // Memes options que notifyStaff (voir entete). `email` peut e^tre fourni pour
 // eviter une requete si l'appelant l'a deja.
 async function notifyUser(userId, { titre, texte, lien = null, type = 'systeme', intro = null, details = null, contenuHtml = null, action = null, email = null }) {
+  console.log('[notify] notifyUser() appele -> userId:', userId, '| titre:', titre);
   try {
-    if (!userId) return;
+    if (!userId) {
+      console.warn('[notify] notifyUser() -> userId manquant, abandon.');
+      return;
+    }
     await insertInApp(userId, type, titre, texte, lien);
 
     let destinataire = email;
@@ -95,13 +114,18 @@ async function notifyUser(userId, { titre, texte, lien = null, type = 'systeme',
       const [u] = await query('SELECT email FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [userId]);
       destinataire = u && u.email ? u.email : null;
     }
+    console.log('[notify] notifyUser() -> destinataire email :', destinataire);
     if (destinataire) {
       const html = buildEmailHtml({ titre, texte, intro, details, contenuHtml, lien, action });
-      await mail.sendEmail(destinataire, titre, html, texte);
+      const ok = await mail.sendEmail(destinataire, titre, html, texte);
+      console.log('[notify] notifyUser() -> mail.sendEmail() a retourne :', ok);
+    } else {
+      console.warn('[notify] notifyUser() -> aucun email trouve pour userId:', userId, ', envoi annule.');
     }
   } catch (err) {
-    console.error('[notify] notifyUser:', err.message);
+    console.error('[notify] notifyUser() ECHEC GENERAL :', err.message);
   }
 }
+
 
 module.exports = { notifyStaff, notifyUser, getStaffRecipients };

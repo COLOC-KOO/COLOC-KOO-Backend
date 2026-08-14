@@ -11,7 +11,6 @@ function toNullableNumber(value) {
   const numberValue = Number(cleaned);
   return Number.isFinite(numberValue) ? numberValue : null;
 }
-
 function normalizeJsonArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string' && item.trim()) : [];
 }
@@ -24,7 +23,6 @@ function mapLogementToAnnonceType(logement) {
   if (normalized.includes('autre')) return 'autre';
   return 'appartement';
 }
-
 /* --- annonces.type_annonce : enum('existante','creation') --- */
 const ANNONCE_TYPE_ANNONCE_VALUES = ['existante', 'creation'];
 function normalizeAnnonceTypeAnnonce(value) {
@@ -280,14 +278,12 @@ async function createDepotAnnonce(userId, payload) {
       [annonceId, photos[index], index === 0 ? 1 : 0, index]
     );
   }
-
   return {
     id_depot_annonce: depotId,
     id_annonce: annonceId,
     reference,
   };
 }
-
 module.exports = {
   createDepotAnnonce,
 };
