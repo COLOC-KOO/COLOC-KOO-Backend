@@ -49,8 +49,17 @@ function splitPipe(value) {
     .map(v => v.trim())
     .filter(Boolean);
 }
-
 function mapAnnonceRow(row) {
+  // 1. Détection intelligente de la valeur meublée (prend en compte 1, "1", "Oui", true, "meuble")
+  const rawMeuble = row.meublee ?? row.est_meuble;
+  const isFurnished = 
+    rawMeuble === 1 || 
+    rawMeuble === '1' || 
+    rawMeuble === true || 
+    String(rawMeuble).toLowerCase() === 'oui' || 
+    String(rawMeuble).toLowerCase() === 'meuble' || 
+    String(rawMeuble).toLowerCase() === 'meublée';
+
   return {
     id: row.id_annonce,
     reference: row.reference,
@@ -97,6 +106,12 @@ function mapAnnonceRow(row) {
     smokers_allowed: Boolean(row.smokers_allowed),
     women_only: Boolean(row.women_only),
     men_only: Boolean(row.men_only),
+
+    // 💡 AJOUT : Tous les alias possibles pour garantir la transmission au frontend
+    meublee: isFurnished ? 'Oui' : 'Non',
+    furnished: isFurnished,
+    est_meuble: isFurnished ? 1 : 0,
+
     auteur: row.auteur_prenom ? `${row.auteur_prenom} ${row.auteur_nom}`.trim() : row.auteur_nom,
     auteur_email: row.auteur_email,
     auteur_telephone: row.auteur_telephone,
@@ -106,6 +121,7 @@ function mapAnnonceRow(row) {
       surface: row.chambre_surface,
       prix_loyer: row.prix_loyer,
       date_disponibilite: row.date_disponibilite,
+      est_meuble: isFurnished ? 1 : 0,
     } : null,
     id_utilisateur: row.id_utilisateur,
     services: splitPipe(row.amenities),
