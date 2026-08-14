@@ -1,8 +1,9 @@
 ﻿const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 const notify = require('../Services/notify.service');
-const { ensureBoosterSchema, BOOSTER_SELECT_SQL, BOOSTER_JOIN_SQL, BOOSTER_ACTIVE_SQL } = require('../Services/booster.service');
+const { ensureBoosterSchema } = require('../Services/booster.service');
 
+// Récupère la liste des annonces filtrées
 async function list(req, res, next) {
   try {
     await ensureBoosterSchema();
@@ -99,33 +100,71 @@ async function list(req, res, next) {
 
     const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     await query('SET SESSION group_concat_max_len = 1000000');
+    
+    // Requête SQL compatible avec ONLY_FULL_GROUP_BY grâce aux fonctions d'agrégation (MAX, MIN, GROUP_CONCAT)
     const rows = await query(
       `
-      SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-            u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
-            v.nom_ville, r.nom_region,
-            MIN(ch.surface) AS chambre_surface, 
-            MIN(ch.prix_loyer) AS prix_loyer, 
-            MIN(ch.date_disponibilite) AS date_disponibilite,
-            COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
-            COUNT(DISTINCT c.id_candidature) AS candidature_count,
-            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
-            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
-            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
-            ${BOOSTER_SELECT_SQL}
+      SELECT a.*, 
+             u.nom AS auteur_nom, 
+             u.prenom AS auteur_prenom,
+             u.email AS auteur_email, 
+             u.telephone AS auteur_telephone, 
+             u.profile_picture AS auteur_profile_picture,
+             v.nom_ville, 
+             r.nom_region,
+             MAX(dac.meublee) AS meublee,
+             MIN(ch.surface) AS chambre_surface, 
+             MIN(ch.prix_loyer) AS prix_loyer, 
+             MIN(ch.date_disponibilite) AS date_disponibilite,
+             COUNT(DISTINCT ch.id_chambre) AS bedrooms_count,
+             COUNT(DISTINCT c.id_candidature) AS candidature_count,
+             GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
+             GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
+             GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
+             
+             MAX(b.id_booster) AS boost_service_id,
+             MAX(b.nom) AS booster_nom,
+             MAX(b.description) AS booster_description,
+             MAX(b.cle_service) AS booster_cle_service,
+             MAX(b.duree) AS booster_duree,
+             MAX(b.unite) AS booster_unite,
+             MAX(b.prix) AS booster_prix,
+             MAX(CASE WHEN b.id_booster IS NULL THEN NULL ELSE COALESCE(da_boost.date_creation, a.date_publication, a.date_creation) END) AS booster_date_creation,
+             
+             MAX(CASE
+               WHEN a.booster IS NOT NULL
+                 AND a.booster <> 0
+                 AND b.id_booster IS NOT NULL
+                 AND b.est_actif = 1
+                 AND (
+                   CASE b.unite
+                     WHEN 'heure' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) HOUR)
+                     WHEN 'semaine' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) WEEK)
+                     WHEN 'mois' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) MONTH)
+                     ELSE DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) DAY)
+                   END
+                 ) >= NOW()
+               THEN 1
+               ELSE 0
+             END) AS booster_actif
+
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
       JOIN regions r ON r.id_region = v.id_region
+      LEFT JOIN depot_annonce da ON da.id_annonce = a.id_annonce
+      LEFT JOIN depot_annonce_chambres dac ON dac.id_depot_annonce = da.id_depot_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       LEFT JOIN candidatures c ON c.id_annonce = a.id_annonce
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-      ${BOOSTER_JOIN_SQL}
+      LEFT JOIN depot_annonce da_boost ON da_boost.id_annonce = a.id_annonce
+      LEFT JOIN booster b ON b.id_booster = a.booster
+
       ${whereSql}
       GROUP BY a.id_annonce
-      ORDER BY ${BOOSTER_ACTIVE_SQL} DESC, a.date_creation DESC
+      ORDER BY booster_actif DESC, a.date_creation DESC
       LIMIT 500
       `,
       values
@@ -137,16 +176,24 @@ async function list(req, res, next) {
   }
 }
 
-// âœ… CORRECTION : Utiliser MIN() pour les colonnes non agrÃ©gÃ©es
+// Récupère une annonce par son ID
 async function getById(req, res, next) {
   try {
     await ensureBoosterSchema();
     await query('SET SESSION group_concat_max_len = 1000000');
+    
+    // Requête SQL corrigée avec agrégations pour éviter l'erreur ONLY_FULL_GROUP_BY
     const rows = await query(
       `
-      SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-             u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
-             v.nom_ville, r.nom_region,
+      SELECT a.*, 
+             u.nom AS auteur_nom, 
+             u.prenom AS auteur_prenom,
+             u.email AS auteur_email, 
+             u.telephone AS auteur_telephone, 
+             u.profile_picture AS auteur_profile_picture,
+             v.nom_ville, 
+             r.nom_region,
+             MAX(dac.meublee) AS meublee,
              MIN(ch.surface) AS chambre_surface, 
              MIN(ch.prix_loyer) AS prix_loyer, 
              MIN(ch.date_disponibilite) AS date_disponibilite,
@@ -155,17 +202,47 @@ async function getById(req, res, next) {
              GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
              GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
              GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
-            ${BOOSTER_SELECT_SQL}
+             
+             MAX(b.id_booster) AS boost_service_id,
+             MAX(b.nom) AS booster_nom,
+             MAX(b.description) AS booster_description,
+             MAX(b.cle_service) AS booster_cle_service,
+             MAX(b.duree) AS booster_duree,
+             MAX(b.unite) AS booster_unite,
+             MAX(b.prix) AS booster_prix,
+             MAX(CASE WHEN b.id_booster IS NULL THEN NULL ELSE COALESCE(da_boost.date_creation, a.date_publication, a.date_creation) END) AS booster_date_creation,
+             
+             MAX(CASE
+               WHEN a.booster IS NOT NULL
+                 AND a.booster <> 0
+                 AND b.id_booster IS NOT NULL
+                 AND b.est_actif = 1
+                 AND (
+                   CASE b.unite
+                     WHEN 'heure' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) HOUR)
+                     WHEN 'semaine' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) WEEK)
+                     WHEN 'mois' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) MONTH)
+                     ELSE DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) DAY)
+                   END
+                 ) >= NOW()
+               THEN 1
+               ELSE 0
+             END) AS booster_actif
+
       FROM annonces a
       JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
       JOIN villes v ON v.id_ville = a.id_ville
       JOIN regions r ON r.id_region = v.id_region
+      LEFT JOIN depot_annonce da ON da.id_annonce = a.id_annonce
+      LEFT JOIN depot_annonce_chambres dac ON dac.id_depot_annonce = da.id_depot_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       LEFT JOIN candidatures c ON c.id_annonce = a.id_annonce
       LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
       LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-      ${BOOSTER_JOIN_SQL}
+      LEFT JOIN depot_annonce da_boost ON da_boost.id_annonce = a.id_annonce
+      LEFT JOIN booster b ON b.id_booster = a.booster
+
       WHERE a.id_annonce = ?
       GROUP BY a.id_annonce
       LIMIT 1
@@ -186,6 +263,7 @@ async function getById(req, res, next) {
   }
 }
 
+// Téléverse des photos d'annonce
 async function uploadPhotos(req, res, next) {
   try {
     const files = Array.isArray(req.files) ? req.files : [];
@@ -200,6 +278,7 @@ async function uploadPhotos(req, res, next) {
   }
 }
 
+// Création d'une nouvelle annonce
 async function create(req, res, next) {
   try {
      const {
@@ -313,18 +392,18 @@ async function create(req, res, next) {
            await query(
              `INSERT INTO chambres (id_annonce, surface, est_meuble, prix_meubles, description_meubles, prix_loyer, prix_charges, type_garantie, montant_garantie, date_disponibilite)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                annonceId,
-                room.surface ? Number(room.surface) : null,
-                null,
-                null,
-                null,
-                room.cost_rent ? Number(room.cost_rent) : null,
-                room.cost_charges ? Number(room.cost_charges) : null,
-                '1mois',
-                null,
-                new Date().toISOString().slice(0, 10),
-              ]
+             [
+               annonceId,
+               room.surface ? Number(room.surface) : null,
+               null,
+               null,
+               null,
+               room.cost_rent ? Number(room.cost_rent) : null,
+               room.cost_charges ? Number(room.cost_charges) : null,
+               '1mois',
+               null,
+               new Date().toISOString().slice(0, 10),
+             ]
            );
          }
        }
@@ -340,9 +419,7 @@ async function create(req, res, next) {
 
     const created = await getByIdInternal(annonceId);
 
-    // Notifie le staff de moderation (moderateurs + admins + super-admins) :
-    // une nouvelle annonce est en attente de validation. Best-effort : n'echoue
-    // jamais le depot de l'annonce.
+    // Envoi de notification au staff
     try {
       const [dep] = await query(
         'SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
@@ -350,20 +427,20 @@ async function create(req, res, next) {
       );
       const nomDeposant = dep ? `${dep.prenom || ''} ${dep.nom || ''}`.trim() : `#${req.user.id}`;
       await notify.notifyStaff({
-        titre: 'Nouvelle annonce Ã  valider',
-        texte: `${nomDeposant} a dÃ©posÃ© l'annonce Â« ${titre} Â» (rÃ©f. ${ref}). En attente de validation.`,
+        titre: 'Nouvelle annonce à valider',
+        texte: `${nomDeposant} a déposé l'annonce « ${titre} » (réf. ${ref}). En attente de validation.`,
         lien: '/admin/annonces',
         roles: ['moderator', 'admin', 'super_admin'],
-        intro: `<strong>${nomDeposant}</strong> a dÃ©posÃ© une nouvelle annonce, en attente de validation.`,
+        intro: `<strong>${nomDeposant}</strong> a déposé une nouvelle annonce, en attente de validation.`,
         details: [
-          ['RÃ©fÃ©rence', `<strong>${ref}</strong>`],
+          ['Référence', `<strong>${ref}</strong>`],
           ['Titre', titre],
           ['Type de bien', type_propriete],
         ],
         action: { label: 'Ouvrir la file de validation', path: '/admin/annonces' },
       });
     } catch {
-      /* notif best-effort */
+      // Notification ignorée si échec
     }
 
     res.status(201).json(created);
@@ -372,6 +449,7 @@ async function create(req, res, next) {
   }
 }
 
+// Mise à jour d'une annonce
 async function update(req, res, next) {
   try {
     const allowed = [
@@ -467,6 +545,7 @@ async function update(req, res, next) {
   }
 }
 
+// Mise à jour du statut d'une annonce
 async function updateStatus(req, res, next) {
   try {
     const { statut } = req.body;
@@ -486,6 +565,7 @@ async function updateStatus(req, res, next) {
   }
 }
 
+// Suppression complète d'une annonce et de ses liaisons
 async function remove(req, res, next) {
   try {
     await query('DELETE FROM candidature_membres WHERE id_candidature IN (SELECT id_candidature FROM candidatures WHERE id_annonce = ?)', [req.params.id]);
@@ -506,6 +586,7 @@ async function remove(req, res, next) {
   }
 }
 
+// Récupère les URLs des photos d'une annonce
 async function getPhotoUrlsByAnnonce(id) {
   const rows = await query(
     `SELECT url FROM photos_annonces WHERE id_annonce = ? ORDER BY ordre, id_photo`,
@@ -514,6 +595,7 @@ async function getPhotoUrlsByAnnonce(id) {
   return rows.map((row) => row.url);
 }
 
+// Récupération interne de l'annonce avec les agrégations corrigées
 // async function getByIdInternal(id) {
 //   await query('SET SESSION group_concat_max_len = 1000000');
 //   const rows = await query(
@@ -546,16 +628,21 @@ async function getPhotoUrlsByAnnonce(id) {
 //   annonce.photos = await getPhotoUrlsByAnnonce(id);
 //   return annonce;
 // }
-
-// âœ… CORRECTION : Utiliser MIN() pour les colonnes non agrÃ©gÃ©es
 async function getByIdInternal(id) {
   await ensureBoosterSchema();
   await query('SET SESSION group_concat_max_len = 1000000');
+  
   const rows = await query(
     `
-    SELECT a.*, u.nom AS auteur_nom, u.prenom AS auteur_prenom,
-           u.email AS auteur_email, u.telephone AS auteur_telephone, u.profile_picture AS auteur_profile_picture,
-           v.nom_ville, r.nom_region,
+    SELECT a.*, 
+           u.nom AS auteur_nom, 
+           u.prenom AS auteur_prenom,
+           u.email AS auteur_email, 
+           u.telephone AS auteur_telephone, 
+           u.profile_picture AS auteur_profile_picture,
+           v.nom_ville, 
+           r.nom_region,
+           MAX(dac.meublee) AS meublee,
            MIN(ch.surface) AS chambre_surface, 
            MIN(ch.prix_loyer) AS prix_loyer, 
            MIN(ch.date_disponibilite) AS date_disponibilite,
@@ -563,16 +650,46 @@ async function getByIdInternal(id) {
            GROUP_CONCAT(DISTINCT ea.amenity ORDER BY ea.id SEPARATOR '||') AS amenities,
            GROUP_CONCAT(DISTINCT ra.regle ORDER BY ra.id SEPARATOR '||') AS rules,
            GROUP_CONCAT(DISTINCT pa.url ORDER BY pa.ordre, pa.id_photo SEPARATOR '||') AS photos,
-           ${BOOSTER_SELECT_SQL}
+           
+           MAX(b.id_booster) AS boost_service_id,
+           MAX(b.nom) AS booster_nom,
+           MAX(b.description) AS booster_description,
+           MAX(b.cle_service) AS booster_cle_service,
+           MAX(b.duree) AS booster_duree,
+           MAX(b.unite) AS booster_unite,
+           MAX(b.prix) AS booster_prix,
+           MAX(CASE WHEN b.id_booster IS NULL THEN NULL ELSE COALESCE(da_boost.date_creation, a.date_publication, a.date_creation) END) AS booster_date_creation,
+           
+           MAX(CASE
+             WHEN a.booster IS NOT NULL
+               AND a.booster <> 0
+               AND b.id_booster IS NOT NULL
+               AND b.est_actif = 1
+               AND (
+                 CASE b.unite
+                   WHEN 'heure' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) HOUR)
+                   WHEN 'semaine' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) WEEK)
+                   WHEN 'mois' THEN DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) MONTH)
+                   ELSE DATE_ADD(COALESCE(da_boost.date_creation, a.date_publication, a.date_creation), INTERVAL COALESCE(b.duree, 0) DAY)
+                 END
+               ) >= NOW()
+             THEN 1
+             ELSE 0
+           END) AS booster_actif
+
     FROM annonces a
     JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
     JOIN villes v ON v.id_ville = a.id_ville
     JOIN regions r ON r.id_region = v.id_region
+    LEFT JOIN depot_annonce da ON da.id_annonce = a.id_annonce
+    LEFT JOIN depot_annonce_chambres dac ON dac.id_depot_annonce = da.id_depot_annonce
     LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
     LEFT JOIN equipements_annonces ea ON ea.id_annonce = a.id_annonce
     LEFT JOIN regles_annonces ra ON ra.id_annonce = a.id_annonce
     LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
-    ${BOOSTER_JOIN_SQL}
+    LEFT JOIN depot_annonce da_boost ON da_boost.id_annonce = a.id_annonce
+    LEFT JOIN booster b ON b.id_booster = a.booster
+
     WHERE a.id_annonce = ?
     GROUP BY a.id_annonce
     LIMIT 1
@@ -588,8 +705,3 @@ async function getByIdInternal(id) {
 }
 
 module.exports = { list, getById, uploadPhotos, create, update, updateStatus, remove };
-
-
-
-
-
