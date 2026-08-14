@@ -2,14 +2,8 @@
 const { getActiveBoosterId } = require('../Services/booster.service');
 
 /* ------------------------------------------------------------------ */
-/* Helpers                                                             */
+/* Helpers                                                            */
 /* ------------------------------------------------------------------ */
-
-// function toNullableNumber(value) {
-//   if (value === undefined || value === null || value === '') return null;
-//   const numberValue = Number(value);
-//   return Number.isFinite(numberValue) ? numberValue : null;
-// }
 
 function toNullableNumber(value) {
   if (value === undefined || value === null || value === '') return null;
@@ -53,7 +47,6 @@ function normalizeModeAnnonce(value) {
 }
 
 /* --- depot_annonce.type_annonce : enum différent (catégorie du bien) --- */
-/* Ce formulaire ne produit que des annonces de colocation.             */
 const DEPOT_TYPE_ANNONCE_DEFAULT = 'Colocation';
 
 /* --- depot_annonce.logement : enum('Appartement','Maison','Villa','Cabane','Studio','Chalet','Autre') --- */
@@ -63,10 +56,42 @@ function normalizeDepotLogement(value) {
   return DEPOT_LOGEMENT_VALUES.includes(v) ? v : 'Appartement';
 }
 
-/* --- chambres / depot_annonce_chambres.meublee (si enum côté DB, sinon libre) --- */
+/* --- NORMALISATION MEUBLE --- */
 function normalizeMeublee(value) {
-  const v = String(value || '').trim();
-  return v || 'Non';
+  if (value === true || value === 1 || value === '1') return 'Oui';
+  if (value === false || value === 0 || value === '0') return 'Non';
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'oui' || v === 'true' || v.includes('meubl')) return 'Oui';
+  if (v === 'non' || v === 'false' || v === 'non meublé' || v === 'non meuble') return 'Non';
+  return v ? (v.charAt(0).toUpperCase() + v.slice(1)) : 'Non';
+}
+
+/* --- NORMALISATION INTERNET --- */
+function normalizeInternet(value) {
+  if (value === true || value === 1 || value === '1') return 'Wifi';
+  if (value === false || value === 0 || value === '0' || value === null || value === undefined) return 'Aucune';
+  const v = String(value).trim();
+  if (!v || v.toLowerCase() === 'false' || v.toLowerCase() === 'non' || v.toLowerCase() === 'aucun' || v.toLowerCase() === 'aucune') {
+    return 'Aucune';
+  }
+  if (v.toLowerCase() === 'true' || v.toLowerCase() === 'oui') return 'Wifi';
+  return v;
+}
+
+/* --- NORMALISATION PARKINGS --- */
+function normalizeParkingCount(value) {
+  if (value === true || value === 'true' || value === 'oui' || value === 'yes') return 1;
+  if (value === false || value === 'false' || value === 'non' || value === 'no' || value === null || value === undefined) return 0;
+  const num = toNullableNumber(value);
+  return num !== null && num >= 0 ? num : 0;
+}
+
+function normalizeParkingCouvert(value) {
+  if (value === true || value === 1 || value === '1') return 1;
+  if (value === false || value === 0 || value === '0' || value === null || value === undefined) return 0;
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'oui' || v === 'true' || v === 'yes') return 1;
+  return 0;
 }
 
 async function findOrCreateVilleId(ville) {
@@ -80,10 +105,18 @@ async function findOrCreateVilleId(ville) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Création                                                            */
+/* Création                                                           */
 /* ------------------------------------------------------------------ */
 
 async function createDepotAnnonce(userId, payload) {
+  // 🟢 LOGS DÈS LE DÉBUT DE LA FONCTION
+  console.log('===================================================');
+  console.log('🚨 CREATE_DEPOT_ANNONCE DÉCLENCHÉE !');
+  console.log('internet reçu ->', payload?.internet);
+  console.log('parking_voitures reçu ->', payload?.parking_voitures);
+  console.log('Toutes les clés reçues ->', payload ? Object.keys(payload) : 'aucun payload');
+  console.log('===================================================');
+  console.log('meublée (1ère chambre) ->', payload.chambres?.[0]?.meublee);
   const rooms = Array.isArray(payload.chambres) && payload.chambres.length > 0 ? payload.chambres : [];
   const reference = `DPA-${Date.now().toString().slice(-8)}`;
   const idVille = await findOrCreateVilleId(payload.ville);
@@ -94,7 +127,6 @@ async function createDepotAnnonce(userId, payload) {
   const typeBailleur = normalizeTypeBailleur(payload.extra?.role);
   const modeAnnonce = normalizeModeAnnonce(payload.extra?.mode);
 
-  // titre : NOT NULL — toujours une valeur non vide, même si quartier absent
   const quartierPart = payload.quartier ? ` à ${payload.quartier}` : '';
   const titre = `${logement}${quartierPart}` || 'Annonce de colocation';
 
@@ -103,21 +135,26 @@ async function createDepotAnnonce(userId, payload) {
   const surface = toNullableNumber(payload.surface);
   const boosterId = await getActiveBoosterId(payload.boost_service_id);
 
-  // nombre_pieces : NOT NULL varchar(10) côté depot_annonce — jamais vide
   const nombrePiecesRaw = payload.nombre_pieces === '10+' ? '10' : String(payload.nombre_pieces || '').trim();
-  const nombrePiecesStr = nombrePiecesRaw || '2'; // 2 = minimum légal d'une colocation
+  const nombrePiecesStr = nombrePiecesRaw || '2';
   const nombrePiecesNum = payload.nombre_pieces === '10+' ? 10 : toNullableNumber(payload.nombre_pieces);
 
-  // email : NOT NULL — déjà validé en amont par le contrôleur, filet de sécurité ici
   const email = payload.email || 'non-renseigne@sarintany-coloc.mg';
 
+  // Normalisation préalable des valeurs d'équipements et parkings
+  const internetVal = normalizeInternet(payload.internet);
+  const parkingVoituresVal = normalizeParkingCount(payload.parking_voitures);
+  const parkingMotosVal = normalizeParkingCount(payload.parking_motos);
+  const parkingCouvertVal = normalizeParkingCouvert(payload.parking_couvert);
+
+  // 1. Insertion dans la table `annonces`
   const annonceId = await insertAndGetId(
     `
     INSERT INTO annonces
     (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
      type_propriete, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
-     longitude, booster)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     longitude, internet, parking_voitures, parking_motos, parking_couvert, booster)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       userId,
@@ -135,17 +172,24 @@ async function createDepotAnnonce(userId, payload) {
       idVille,
       toNullableNumber(payload.latitude),
       toNullableNumber(payload.longitude),
+      internetVal,
+      parkingVoituresVal,
+      parkingMotosVal,
+      parkingCouvertVal,
       boosterId,
     ]
   );
 
+  // 2. Insertion dans la table `depot_annonce`
   const depotId = await insertAndGetId(
     `
     INSERT INTO depot_annonce
     (id_annonce, id_utilisateur, reference, adresse, ville, quartier, latitude, longitude,
-     type_annonce, logement, nombre_pieces, surface, commodites, regles, email, telephone_code,
+     type_annonce, logement, nombre_pieces, surface, internet, 
+     parking_voitures, parking_motos, parking_couvert,
+     commodites, regles, email, telephone_code,
      telephone, message, visite_3d, boost_service_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       annonceId,
@@ -160,6 +204,10 @@ async function createDepotAnnonce(userId, payload) {
       logement,
       nombrePiecesStr,
       surface,
+      internetVal,
+      parkingVoituresVal,
+      parkingMotosVal,
+      parkingCouvertVal,
       JSON.stringify(normalizeJsonArray(payload.commodites)),
       JSON.stringify(normalizeJsonArray(payload.regles)),
       email,
@@ -171,46 +219,7 @@ async function createDepotAnnonce(userId, payload) {
     ]
   );
 
-  // for (const room of rooms) {
-  //   const disponibleAPartir = room.disponible_a_partir || new Date().toISOString().slice(0, 10);
-  //   const meublee = normalizeMeublee(room.meublee);
-  //   const loyer = toNullableNumber(room.loyer) || 0;
-  //
-  //   await query(
-  //     `
-  //     INSERT INTO depot_annonce_chambres
-  //     (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
-  //     VALUES (?, ?, ?, ?, ?, ?, ?)
-  //     `,
-  //     [
-  //       depotId,
-  //       disponibleAPartir,
-  //       loyer,
-  //       toNullableNumber(room.charges),
-  //       toNullableNumber(room.caution),
-  //       toNullableNumber(room.surface),
-  //       meublee,
-  //     ]
-  //   );
-  //
-  //   await query(
-  //     `
-  //     INSERT INTO chambres
-  //     (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
-  //     VALUES (?, ?, ?, ?, ?, ?, ?)
-  //     `,
-  //     [
-  //       annonceId,
-  //       toNullableNumber(room.surface),
-  //       meublee,
-  //       loyer,
-  //       toNullableNumber(room.charges),
-  //       toNullableNumber(room.caution),
-  //       disponibleAPartir,
-  //     ]
-  //   );
-  // }
-
+  // 3. Insertion des chambres
   for (const room of rooms) {
     const disponibleAPartir = room.disponible_a_partir || new Date().toISOString().slice(0, 10);
     const meublee = normalizeMeublee(room.meublee);
@@ -220,48 +229,51 @@ async function createDepotAnnonce(userId, payload) {
     const surfaceChambre = toNullableNumber(room.surface);
 
     await query(
-        `
-          INSERT INTO depot_annonce_chambres
-          (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          depotId,
-          disponibleAPartir,
-          loyer,
-          charges,
-          caution,
-          surfaceChambre,
-          meublee,
-        ]
+      `
+        INSERT INTO depot_annonce_chambres
+        (id_depot_annonce, disponible_a_partir, loyer, charges, caution, surface, meublee)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        depotId,
+        disponibleAPartir,
+        loyer,
+        charges,
+        caution,
+        surfaceChambre,
+        meublee,
+      ]
     );
 
     await query(
-        `
-          INSERT INTO chambres
-          (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          annonceId,
-          surfaceChambre,
-          meublee,
-          loyer,
-          charges,
-          caution,
-          disponibleAPartir,
-        ]
+      `
+        INSERT INTO chambres
+        (id_annonce, surface, est_meuble, prix_loyer, prix_charges, montant_garantie, date_disponibilite)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        annonceId,
+        surfaceChambre,
+        meublee,
+        loyer,
+        charges,
+        caution,
+        disponibleAPartir,
+      ]
     );
   }
 
+  // 4. Équipements
   for (const amenity of normalizeJsonArray(payload.commodites)) {
     await query('INSERT INTO equipements_annonces (id_annonce, amenity) VALUES (?, ?)', [annonceId, amenity]);
   }
 
+  // 5. Règles
   for (const regle of normalizeJsonArray(payload.regles)) {
     await query('INSERT INTO regles_annonces (id_annonce, regle) VALUES (?, ?)', [annonceId, regle]);
   }
 
+  // 6. Photos
   for (let index = 0; index < photos.length; index += 1) {
     await query(
       'INSERT INTO photos_annonces (id_annonce, url, est_principale, ordre) VALUES (?, ?, ?, ?)',
