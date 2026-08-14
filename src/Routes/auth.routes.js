@@ -23,5 +23,18 @@ router.get('/me', requireAuth, controller.me);
 router.patch('/me', requireAuth, controller.updateMe);
 router.post('/me/upload', requireAuth, upload.single('photo'), controller.uploadProfilePicture);
 router.patch('/me/password', requireAuth, controller.changePassword);
+router.get('/me/security', requireAuth, controller.getSecuritySettings);
+router.patch('/me/security', requireAuth, controller.updateSecuritySettings);
+router.delete('/me', requireAuth, controller.deleteAccount);
+
+// appareils connectes (sessions reelles)
+router.get('/me/sessions', requireAuth, controller.listSessions);
+router.post('/me/sessions/revoke-others', requireAuth, controller.revokeOtherSessions);
+
+// ✅ AJOUT : Route pour récupérer une ville par son ID (DOIT être AVANT /villes)
+router.get('/villes/:id', requireAuth, controller.getVilleById);
+
+// ✅ Route pour récupérer la liste des villes (DOIT être APRÈS /villes/:id)
+router.get('/villes', requireAuth, controller.getVilles);
 
 module.exports = router;

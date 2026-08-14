@@ -10,15 +10,18 @@ const { notFound, errorHandler } = require('./Middleware/error.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
 const contratsRoutes = require('./Routes/contrats.route');
 
+//  NOUVEL IMPORT : contrôleur des alertes
+const { getAlertes, createAlerte, deleteAlerte } = require('./Controllers/alertes.controller.js');
+
 function createApp() {
   const app = express();
   const uploadsDir = path.join(__dirname, '..', 'public', 'uploads');
   fs.mkdirSync(uploadsDir, { recursive: true });
 
-  // ✅ Appliquer CORS à toutes les routes
+  //  Appliquer CORS à toutes les routes
   app.use(corsMiddleware);
   
-  // ✅ Configuration Helmet pour permettre les ressources cross-origin
+  //  Configuration Helmet pour permettre les ressources cross-origin
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: false,
@@ -29,16 +32,14 @@ function createApp() {
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ extended: true, limit: '100mb' }));
   
-  // ✅ Middleware spécifique pour les fichiers statiques avec CORS
+  //  Middleware spécifique pour les fichiers statiques avec CORS
   const staticCorsMiddleware = (req, res, next) => {
-    // Ajouter les en-têtes CORS pour les fichiers statiques
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
     
-    // Répondre aux requêtes OPTIONS
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
@@ -46,17 +47,14 @@ function createApp() {
     next();
   };
   
-  // ✅ Appliquer le middleware CORS aux fichiers statiques
   app.use('/uploads', staticCorsMiddleware, express.static(uploadsDir, {
     setHeaders: (res, path, stat) => {
-      // Ajouter les en-têtes CORS pour chaque fichier
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
   }));
   
-  // ✅ Rediriger /public/uploads vers /uploads
   app.use('/public/uploads', staticCorsMiddleware, express.static(uploadsDir, {
     setHeaders: (res, path, stat) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -77,14 +75,18 @@ function createApp() {
     });
   });
 
-  // expose api routes under /api
   app.use('/api', routes);
 
-  // lightweight geocode health route for quick check
   app.get('/api/geocode/health', (req, res) => {
     res.json({ ok: true, source: 'geocode-proxy-ready' });
   });
 
+  //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
+  app.get('/api/alertes/:idUtilisateur', getAlertes);
+  app.post('/api/alertes', createAlerte);
+  app.delete('/api/alertes/:id', deleteAlerte);
+
+  // ⚠️ Ces deux middlewares DOIVENT rester en dernier
   app.use(notFound);
   app.use(errorHandler);
 
