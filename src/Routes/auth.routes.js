@@ -27,7 +27,6 @@ router.get('/me/security', requireAuth, controller.getSecuritySettings);
 router.patch('/me/security', requireAuth, controller.updateSecuritySettings);
 router.delete('/me', requireAuth, controller.deleteAccount);
 
-// appareils connectes (sessions reelles)
 router.get('/me/sessions', requireAuth, controller.listSessions);
 router.post('/me/sessions/revoke-others', requireAuth, controller.revokeOtherSessions);
 
@@ -38,3 +37,6 @@ router.get('/villes/:id', requireAuth, controller.getVilleById);
 router.get('/villes', requireAuth, controller.getVilles);
 
 module.exports = router;
+
+
+

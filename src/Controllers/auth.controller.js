@@ -23,7 +23,6 @@ async function resolveRoleId(posteOrRole) {
   return rows[0]?.id_role || 1;
 }
 
-// Detecte le type d'appareil + libelle a partir du User-Agent
 function detectDevice(userAgent) {
   const ua = String(userAgent || '');
   const isMobile = /android|iphone|ipod|mobile/i.test(ua);
@@ -44,13 +43,10 @@ function detectDevice(userAgent) {
   return { type: isMobile ? 'mobile' : 'desktop', label: `${browser} / ${os}` };
 }
 
-// Cree une session en base et renvoie son session_id
-// ✅ CORRECTION : remplace l'ancienne session du MEME appareil (evite les doublons)
 async function createSession(userId, req) {
   const sessionId = crypto.randomUUID();
   const device = detectDevice(req.headers['user-agent']);
 
-  // Supprime la precedente session de cet appareil avant d'en creer une nouvelle
   await query(
     'DELETE FROM sessions WHERE id_utilisateur = ? AND type_appareil = ? AND label = ?',
     [userId, device.type, device.label]
@@ -64,7 +60,6 @@ async function createSession(userId, req) {
   return sessionId;
 }
 
-// "il y a 3 jours", "il y a 5 min"... pour les autres appareils
 function formatRelativeDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -77,7 +72,6 @@ function formatRelativeDate(value) {
   return `il y a ${days} jours`;
 }
 
-// Convertit une valeur (string 'YYYY-MM-DD' ou Date) en Date valide, sinon null
 function parseBirthDate(rawValue) {
   if (!rawValue) return null;
   if (rawValue instanceof Date) {
@@ -88,6 +82,34 @@ function parseBirthDate(rawValue) {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
   return null;
+}
+
+function formatDateForMySQL(date) {
+  if (!date || !(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function computeAge(birthDate) {
+  if (!birthDate || !(birthDate instanceof Date) || Number.isNaN(birthDate.getTime())) {
+    return null;
+  }
+  
+  const today = new Date();
+  const birth = new Date(birthDate);
+  
+  let age = today.getFullYear() - birth.getFullYear();
+  const monthDiff = today.getMonth() - birth.getMonth();
+  
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+    age--;
+  }
+  
+  return Math.max(0, age);
 }
 
 async function register(req, res, next) {
@@ -122,16 +144,17 @@ async function register(req, res, next) {
 
     const roleId = id_role || (await resolveRoleId(poste));
     const hash = await bcrypt.hash(mot_de_passe, 10);
+    
+    // ✅ DEBUG : Calcul de l'âge et formatage
     const age = computeAge(birthDate);
+    const birthDateFormatted = formatDateForMySQL(birthDate);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
        (email, telephone, cin, mot_de_passe, nom, prenom, date_naissance, age, bio, profession, id_role)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, cin, hash, nom, prenom, birthDate.toISOString().slice(0, 10), age, bio, profession, roleId]
+      [email, telephone, cin, hash, nom, prenom, birthDateFormatted, age, bio, profession, roleId]
     );
-
-    const user = await getUserById(id);
-
+const user = await getUserById(id);
     let token;
     try {
       const sessionId = await createSession(id, req);
@@ -161,6 +184,7 @@ async function register(req, res, next) {
 
     res.status(201).json({ user, token });
   } catch (err) {
+    console.error('❌ [REGISTER] Erreur:', err);
     next(err);
   }
 }
@@ -204,6 +228,8 @@ async function login(req, res, next) {
 
     await query('UPDATE utilisateurs SET derniere_connexion = NOW() WHERE id_utilisateur = ?', [user.id]);
 
+    console.log('🔍 [LOGIN] User connecté - age:', user.age, '| date_naissance:', user.date_naissance);
+
     res.json({ user, token });
   } catch (err) {
     next(err);
@@ -213,6 +239,7 @@ async function login(req, res, next) {
 async function me(req, res, next) {
   try {
     const user = await getUserById(req.user.id);
+    console.log('🔍 [ME] User renvoyé - age:', user?.age, '| date_naissance:', user?.date_naissance);
     res.json(user);
   } catch (err) {
     next(err);
@@ -230,8 +257,11 @@ async function updateMe(req, res, next) {
     if (body.date_naissance !== undefined) {
       const birthDate = parseBirthDate(body.date_naissance);
       const age = birthDate ? computeAge(birthDate) : null;
+      const birthDateFormatted = birthDate ? formatDateForMySQL(birthDate) : null;
+      
+     
       pairs.push('date_naissance = ?');
-      values.push(birthDate ? birthDate.toISOString().slice(0, 10) : null);
+      values.push(birthDateFormatted);
       pairs.push('age = ?');
       values.push(age);
     }
@@ -266,6 +296,9 @@ async function updateMe(req, res, next) {
     values.push(req.user.id);
     await query(`UPDATE utilisateurs SET ${pairs.join(', ')} WHERE id_utilisateur = ?`, values);
     const user = await getUserById(req.user.id);
+    
+   
+    
     res.json(user);
   } catch (err) {
     console.error('updateMe error', err);
@@ -280,18 +313,6 @@ async function resolveCityId(cityValue) {
   if (/^\d+$/.test(text)) return Number(text);
   const rows = await query('SELECT id_ville FROM villes WHERE LOWER(nom_ville) = LOWER(?) LIMIT 1', [text]);
   return rows[0]?.id_ville ?? null;
-}
-
-function computeAge(birthDate) {
-  const today = new Date();
-  const birth = new Date(birthDate);
-  let age = today.getFullYear() - birth.getFullYear();
-  const monthDiff = today.getMonth() - birth.getMonth();
-  const dayDiff = today.getDate() - birth.getDate();
-  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
-    age -= 1;
-  }
-  return Math.max(0, age);
 }
 
 async function uploadProfilePicture(req, res, next) {
@@ -349,12 +370,18 @@ async function getUserById(id) {
   );
 
   if (rows.length === 0) {
+    console.log('⚠️ [getUserById] Utilisateur non trouvé pour id:', id);
     return null;
   }
-  return mapUserRow(rows[0]);
+  
+  console.log('🔍 [getUserById] Row brut depuis DB - age:', rows[0].age, '| date_naissance:', rows[0].date_naissance);
+  
+  const mapped = mapUserRow(rows[0]);
+  
+ 
+  return mapped;
 }
 
-// ===== AJOUT : lecture des parametres de securite (2FA) enregistres en DB =====
 async function getSecuritySettings(req, res, next) {
   try {
     const rows = await query(
@@ -373,7 +400,6 @@ async function getSecuritySettings(req, res, next) {
     next(err);
   }
 }
-// ===== FIN AJOUT =====
 
 async function updateSecuritySettings(req, res, next) {
   try {
@@ -407,7 +433,6 @@ async function deleteAccount(req, res, next) {
   try {
     const userId = req.user.id;
 
-    // await query('DELETE FROM sessions WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM favoris WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM candidatures WHERE id_utilisateur = ?', [userId]);
     await query('DELETE FROM recherches_sauvegardees WHERE id_utilisateur = ?', [userId]);
@@ -446,7 +471,6 @@ async function listSessions(req, res, next) {
       };
     });
 
-    // Token ancien (sans session) : on affiche quand meme l'appareil actuel
     if (!currentSessionId) {
       const device = detectDevice(req.headers['user-agent']);
       sessions.unshift({
@@ -480,7 +504,6 @@ async function revokeOtherSessions(req, res, next) {
   }
 }
 
-// ✅ AJOUT : Fonction pour récupérer la liste des villes
 async function getVilles(req, res, next) {
   try {
     const rows = await query('SELECT id_ville, nom_ville FROM villes ORDER BY nom_ville ASC');
@@ -490,6 +513,7 @@ async function getVilles(req, res, next) {
     res.status(500).json({ message: 'Impossible de charger la liste des villes.' });
   }
 }
+
 async function getVilleById(req, res, next) {
   try {
     const { id } = req.params;
@@ -505,7 +529,6 @@ async function getVilleById(req, res, next) {
     res.status(500).json({ message: 'Impossible de récupérer la ville.' });
   }
 }
-
 
 module.exports = {
   register,
