@@ -4,8 +4,8 @@ CREATE TABLE groupes_discussion (
   id_createur INT NOT NULL,
   id_annonce INT NULL,              -- rattacher le groupe à une annonce/coloc si pertinent
   date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (id_createur) REFERENCES utilisateurs(id_utilisateur) ON DELETE CASCADE,
-  FOREIGN KEY (id_annonce) REFERENCES annonces(id_annonce) ON DELETE CASCADE
+  FOREIGN KEY (id_createur) REFERENCES utilisateurs(id_utilisateur),
+  FOREIGN KEY (id_annonce) REFERENCES annonces(id_annonce)
 );
 
 CREATE TABLE groupe_membres (
@@ -21,12 +21,12 @@ CREATE TABLE groupe_membres (
 CREATE TABLE groupe_messages (
   id_message INT AUTO_INCREMENT PRIMARY KEY,
   id_groupe INT NOT NULL,
-  id_expediteur INT NULL,
+  id_expediteur INT NOT NULL,
   contenu TEXT NOT NULL,
   date_envoi DATETIME DEFAULT CURRENT_TIMESTAMP,
   signalement_abus TINYINT DEFAULT 0,
   FOREIGN KEY (id_groupe) REFERENCES groupes_discussion(id_groupe) ON DELETE CASCADE,
-  FOREIGN KEY (id_expediteur) REFERENCES utilisateurs(id_utilisateur) ON DELETE SET NULL
+  FOREIGN KEY (id_expediteur) REFERENCES utilisateurs(id_utilisateur)
 );
 
 -- pour savoir ce que chaque membre a lu (compteur non-lus par groupe)
