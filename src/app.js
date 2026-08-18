@@ -10,8 +10,11 @@ const { notFound, errorHandler } = require('./Middleware/error.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
 const contratsRoutes = require('./Routes/contrats.route');
 
-//  NOUVEL IMPORT : contrôleur des alertes
+// NOUVEL IMPORT : contrôleur des alertes
 const { getAlertes, createAlerte, deleteAlerte } = require('./Controllers/alertes.controller.js');
+
+// NOUVEL IMPORT : contrôleur des préférences de notification
+const { getPreferences, updatePreferences } = require('./Controllers/preferences.controller.js');
 
 function createApp() {
   const app = express();
@@ -81,10 +84,14 @@ function createApp() {
     res.json({ ok: true, source: 'geocode-proxy-ready' });
   });
 
-  //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
+  // NOUVELLES ROUTES : alertes (AVANT le notFound !)
   app.get('/api/alertes/:idUtilisateur', getAlertes);
   app.post('/api/alertes', createAlerte);
   app.delete('/api/alertes/:id', deleteAlerte);
+
+  // NOUVELLES ROUTES : préférences de notification (AVANT le notFound !)
+  app.get('/api/preferences/:idUtilisateur', getPreferences);
+  app.put('/api/preferences/:idUtilisateur', updatePreferences);
 
   // ⚠️ Ces deux middlewares DOIVENT rester en dernier
   app.use(notFound);
