@@ -19,7 +19,22 @@ const { getPreferences, updatePreferences } = require('./Controllers/preferences
 function createApp() {
   const app = express();
   const uploadsDir = path.join(__dirname, '..', 'public', 'uploads');
+  const depotAnnonceDir = path.join(uploadsDir, 'depot-annonce');
+  const campagnesDir = path.join(uploadsDir, 'campagnes');
+
   fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(depotAnnonceDir, { recursive: true });
+  fs.mkdirSync(campagnesDir, { recursive: true });
+
+  const serveUploads = (directory, mountPath) => {
+    app.use(mountPath, staticCorsMiddleware, express.static(directory, {
+      setHeaders: (res, filePath, stat) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+      }
+    }));
+  };
 
   //  Appliquer CORS à toutes les routes
   app.use(corsMiddleware);
@@ -50,21 +65,10 @@ function createApp() {
     next();
   };
   
-  app.use('/uploads', staticCorsMiddleware, express.static(uploadsDir, {
-    setHeaders: (res, path, stat) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
-    }
-  }));
-  
-  app.use('/public/uploads', staticCorsMiddleware, express.static(uploadsDir, {
-    setHeaders: (res, path, stat) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
-    }
-  }));
+  serveUploads(uploadsDir, '/uploads');
+  serveUploads(depotAnnonceDir, '/uploads/depot-annonce');
+  serveUploads(campagnesDir, '/uploads/campagnes');
+  serveUploads(uploadsDir, '/public/uploads');
 
   app.use('/api/candidatures', candidatureRoutes);
   app.use('/api/contrats', contratsRoutes);
