@@ -12,15 +12,33 @@ const app = createApp();
 // ✅ Les routes des alertes sont maintenant dans app.js
 // (avant le middleware notFound, pour qu'elles soient bien atteignables)
 
+async function listenWithFallback(port) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, () => {
+      console.log(`Serveur demarre sur le port ${port}`);
+      resolve(server);
+    });
+
+    server.once('error', err => {
+      if (err.code === 'EADDRINUSE') {
+        const nextPort = port + 1;
+        console.warn(`Port ${port} indisponible, tentative sur ${nextPort}...`);
+        server.close(() => resolve(listenWithFallback(nextPort)));
+        return;
+      }
+
+      reject(err);
+    });
+  });
+}
+
 async function start() {
   await testConnection();
   await ensureUserProfileColumn();
   await ensureBusinessSchema();
   await ensurePartenaireRequestSchema();
 
-  const server = app.listen(PORT, () => {
-    console.log(`Serveur demarre sur le port ${PORT}`);
-  });
+  const server = await listenWithFallback(PORT);
   app.set('realtime', attachRealtime(server));
 
   process.on('unhandledRejection', err => {

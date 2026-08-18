@@ -86,10 +86,6 @@ function createApp() {
 
   //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
   app.use('/api', alertesRoutes);
-  // NOUVELLES ROUTES : alertes (AVANT le notFound !)
-  app.get('/api/alertes/:idUtilisateur', getAlertes);
-  app.post('/api/alertes', createAlerte);
-  app.delete('/api/alertes/:id', deleteAlerte);
 
   // NOUVELLES ROUTES : préférences de notification (AVANT le notFound !)
   app.get('/api/preferences/:idUtilisateur', getPreferences);
