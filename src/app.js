@@ -13,6 +13,9 @@ const contratsRoutes = require('./Routes/contrats.route');
 //  NOUVEL IMPORT : routes des alertes
 const alertesRoutes = require('./Routes/alertes.routes.js');
 
+// NOUVEL IMPORT : contrôleur des préférences de notification
+const { getPreferences, updatePreferences } = require('./Controllers/preferences.controller.js');
+
 function createApp() {
   const app = express();
   const uploadsDir = path.join(__dirname, '..', 'public', 'uploads');
@@ -83,6 +86,14 @@ function createApp() {
 
   //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
   app.use('/api', alertesRoutes);
+  // NOUVELLES ROUTES : alertes (AVANT le notFound !)
+  app.get('/api/alertes/:idUtilisateur', getAlertes);
+  app.post('/api/alertes', createAlerte);
+  app.delete('/api/alertes/:id', deleteAlerte);
+
+  // NOUVELLES ROUTES : préférences de notification (AVANT le notFound !)
+  app.get('/api/preferences/:idUtilisateur', getPreferences);
+  app.put('/api/preferences/:idUtilisateur', updatePreferences);
 
   // ⚠️ Ces deux middlewares DOIVENT rester en dernier
   app.use(notFound);
