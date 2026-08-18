@@ -10,8 +10,8 @@ const { notFound, errorHandler } = require('./Middleware/error.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
 const contratsRoutes = require('./Routes/contrats.route');
 
-// NOUVEL IMPORT : contrôleur des alertes
-const { getAlertes, createAlerte, deleteAlerte } = require('./Controllers/alertes.controller.js');
+//  NOUVEL IMPORT : routes des alertes
+const alertesRoutes = require('./Routes/alertes.routes.js');
 
 // NOUVEL IMPORT : contrôleur des préférences de notification
 const { getPreferences, updatePreferences } = require('./Controllers/preferences.controller.js');
@@ -84,6 +84,8 @@ function createApp() {
     res.json({ ok: true, source: 'geocode-proxy-ready' });
   });
 
+  //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
+  app.use('/api', alertesRoutes);
   // NOUVELLES ROUTES : alertes (AVANT le notFound !)
   app.get('/api/alertes/:idUtilisateur', getAlertes);
   app.post('/api/alertes', createAlerte);
