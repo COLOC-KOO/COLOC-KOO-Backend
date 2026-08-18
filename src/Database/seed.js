@@ -51,7 +51,7 @@ async function main() {
      (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, est_verifie, statut, id_role)
      VALUES
      ('coloc@email.mg', '+261340000001', ?, 'Rakoto', 'Andriamahefa', 26, 'Developpeur web', 'Developpeur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'coloc' LIMIT 1)),
-     ('superadmin@email.mg', '+261340000002', ?, 'Rabe', 'Miandrisoa', 32, 'Proprietaire verifie', 'super_admin', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'super_admin' LIMIT 1)),
+     (' ', '+261340000002', ?, 'Rabe', 'Miandrisoa', 32, 'Proprietaire verifie', 'super_admin', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'super_admin' LIMIT 1)),
      ('moderateur@colockoo.mg', '+261340000003', ?, 'Moderateur', 'Equipe', 30, 'Moderation', 'Moderateur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'moderator' LIMIT 1)),
      ('admin@colockoo.mg', '+261340000004', ?, 'Super', 'Admin', 34, 'Administration', 'Administrateur', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'admin' LIMIT 1))
      ON DUPLICATE KEY UPDATE nom = VALUES(nom)`,
