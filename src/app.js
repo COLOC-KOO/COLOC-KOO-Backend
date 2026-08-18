@@ -10,8 +10,8 @@ const { notFound, errorHandler } = require('./Middleware/error.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
 const contratsRoutes = require('./Routes/contrats.route');
 
-//  NOUVEL IMPORT : contrôleur des alertes
-const { getAlertes, createAlerte, deleteAlerte } = require('./Controllers/alertes.controller.js');
+//  NOUVEL IMPORT : routes des alertes
+const alertesRoutes = require('./Routes/alertes.routes.js');
 
 function createApp() {
   const app = express();
@@ -82,9 +82,7 @@ function createApp() {
   });
 
   //  NOUVELLES ROUTES : alertes (AVANT le notFound !)
-  app.get('/api/alertes/:idUtilisateur', getAlertes);
-  app.post('/api/alertes', createAlerte);
-  app.delete('/api/alertes/:id', deleteAlerte);
+  app.use('/api', alertesRoutes);
 
   // ⚠️ Ces deux middlewares DOIVENT rester en dernier
   app.use(notFound);

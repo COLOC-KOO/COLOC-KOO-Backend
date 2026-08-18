@@ -1,4 +1,3 @@
-// src/Controllers/alertes.controller.js
 const { query } = require('../Services/db.service.js');
 
 // GET /api/alertes/:idUtilisateur
@@ -49,6 +48,41 @@ async function createAlerte(req, res) {
   }
 }
 
+// PATCH /api/alertes/:id/notifications
+// body: { notif_push?: boolean, notif_email?: boolean }
+async function updateNotifications(req, res) {
+  try {
+    const { id } = req.params;
+    const { notif_push, notif_email } = req.body;
+
+    const champs = [];
+    const valeurs = [];
+
+    if (notif_push !== undefined) {
+      champs.push('notif_push = ?');
+      valeurs.push(notif_push ? 1 : 0);
+    }
+    if (notif_email !== undefined) {
+      champs.push('notif_email = ?');
+      valeurs.push(notif_email ? 1 : 0);
+    }
+
+    if (champs.length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour' });
+    }
+
+    valeurs.push(id);
+    await query(
+      `UPDATE recherches_sauvegardees SET ${champs.join(', ')} WHERE id = ?`,
+      valeurs
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Erreur updateNotifications:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+}
+
 // DELETE /api/alertes/:id
 async function deleteAlerte(req, res) {
   try {
@@ -60,4 +94,4 @@ async function deleteAlerte(req, res) {
   }
 }
 
-module.exports = { getAlertes, createAlerte, deleteAlerte };
+module.exports = { getAlertes, createAlerte, updateNotifications, deleteAlerte };
