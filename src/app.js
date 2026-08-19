@@ -64,7 +64,11 @@ function createApp() {
     
     next();
   };
-  
+  app.get('/test-cron-expire', async (req, res) => {
+  const { verifierAnnoncesExpirantJ7 } = require('./Cron/expireJ7.cron');
+  await verifierAnnoncesExpirantJ7();
+  res.json({ message: 'Cron execute manuellement, regarde les logs serveur.' });
+});
   serveUploads(uploadsDir, '/uploads');
   serveUploads(depotAnnonceDir, '/uploads/depot-annonce');
   serveUploads(campagnesDir, '/uploads/campagnes');

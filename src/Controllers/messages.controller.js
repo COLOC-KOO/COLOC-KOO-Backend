@@ -1,4 +1,41 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
+const { veutEmailPourEvenement } = require('./preferences.helper');
+
+async function envoyerEmailNouveauMessage(message) {
+  if (!message || !message.destinataire_email) {
+    console.log('[messages] pas d\'email destinataire, envoi annule');
+    return;
+  }
+
+  const veutEmail = await veutEmailPourEvenement(message.id_destinataire, 'new_msg');
+  if (!veutEmail) {
+    console.log('[messages] destinataire', message.id_destinataire, 'a desactive l\'email pour new_msg, envoi annule');
+    return;
+  }
+
+  const expediteurNom = [message.expediteur_prenom, message.expediteur_nom].filter(Boolean).join(' ') || 'Un utilisateur';
+  const destinataireNom = message.destinataire_prenom || '';
+
+  const html = wrapLayout(
+    'Nouveau message reçu',
+    `<p>Bonjour ${destinataireNom},</p>
+     <p><strong>${expediteurNom}</strong> vous a envoyé un message${message.annonce_titre ? ` à propos de l'annonce « ${message.annonce_titre} »` : ''}.</p>
+     ${detailsTable([
+       ['De', expediteurNom],
+       ['Sujet', message.sujet],
+       ['Message', message.contenu?.slice(0, 200)],
+     ])}
+     ${actionButton('Voir la conversation', `/compte?tab=messages&user=${message.id_expediteur}`)}`
+  );
+
+  await sendEmail(
+    message.destinataire_email,
+    `${expediteurNom} vous a envoyé un message`,
+    html,
+    `${expediteurNom} vous a envoyé un message : ${message.contenu?.slice(0, 200)}`
+  );
+}
 
 async function listThreads(req, res, next) {
   try {
@@ -11,15 +48,15 @@ async function listThreads(req, res, next) {
          (m.id_expediteur = ?) AS est_dernier_message_mien,
          COUNT(*) AS total_messages,
          SUM(CASE WHEN m.id_destinataire = ? AND m.est_lu = 0 THEN 1 ELSE 0 END) AS non_lus,
-         
+
          /* Nom et prénom du propriétaire de l'annonce */
          prop.nom AS proprietaire_nom,
          prop.prenom AS proprietaire_prenom,
-         
+
          /* Nom et prénom de l'interlocuteur */
          CASE WHEN m.id_expediteur = ? THEN de.nom ELSE ex.nom END AS interlocuteur_nom,
          CASE WHEN m.id_expediteur = ? THEN de.prenom ELSE ex.prenom END AS interlocuteur_prenom,
-         
+
          a.titre AS annonce_titre,
          a.quartier AS annonce_quartier,
          v.nom_ville AS annonce_ville,
@@ -28,14 +65,14 @@ async function listThreads(req, res, next) {
        FROM messages m
        INNER JOIN (
          /* Sous-requête pour récupérer le dernier message exact par fil de discussion */
-         SELECT 
+         SELECT
            CASE WHEN id_expediteur = ? THEN id_destinataire ELSE id_expediteur END AS sub_interlocuteur,
            MAX(id_message) AS max_id_message
          FROM messages
          WHERE id_expediteur = ? OR id_destinataire = ?
          GROUP BY sub_interlocuteur
        ) last_msg ON m.id_message = last_msg.max_id_message
-       
+
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
@@ -112,19 +149,23 @@ async function send(req, res, next) {
     if (!id_destinataire || !contenu) {
       return res.status(400).json({ message: 'Destinataire et contenu requis.' });
     }
+
     const id = await insertAndGetId(
       `INSERT INTO messages (id_expediteur, id_destinataire, id_annonce, sujet, contenu, message_parent)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [req.user.id, id_destinataire, id_annonce || null, sujet || null, contenu, message_parent || null]
     );
+
     await query(
       `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
        VALUES (?, 'message', ?, ?, ?)`,
       [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/compte?tab=messages&user=${req.user.id}`]
     ).catch(() => {});
+
     const [message] = await query(
       `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
               de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
+              de.email AS destinataire_email,
               a.titre AS annonce_titre
        FROM messages m
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
@@ -133,8 +174,15 @@ async function send(req, res, next) {
        WHERE m.id_message = ? LIMIT 1`,
       [id]
     );
+
     req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
+
     res.status(201).json(message || { id_message: id });
+
+    // Envoi de l'email en arrière-plan, sans bloquer la réponse HTTP
+    envoyerEmailNouveauMessage(message).catch((err) =>
+      console.error('[messages] erreur envoi email nouveau message:', err)
+    );
   } catch (err) {
     next(err);
   }
@@ -171,6 +219,7 @@ async function removeThread(req, res, next) {
     next(err);
   }
 }
+
 async function removeMessage(req, res, next) {
   try {
     // allow sender or recipient to delete their copy
@@ -186,4 +235,5 @@ async function removeMessage(req, res, next) {
     next(err);
   }
 }
+
 module.exports = { listThreads, getThread, send, report, removeMessage, removeThread };

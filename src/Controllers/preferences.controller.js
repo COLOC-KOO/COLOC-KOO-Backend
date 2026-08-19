@@ -21,15 +21,11 @@ function parseEvenements(raw) {
   }
 }
 
-// NB: si un middleware d'auth pose req.user (ex: { id_utilisateur, poste }),
-// on vérifie ici que l'utilisateur ne lit/écrit que SES PROPRES préférences
-// (sauf rôle admin/superadmin), pour éviter qu'un id arbitraire dans l'URL
-// permette de consulter/modifier les préférences d'un tiers.
 function verifierProprietaire(req, res) {
   const idCible = String(req.params.idUtilisateur);
   const user = req.user;
 
-  if (!user) return true; // pas de middleware d'auth branché sur cette route
+  if (!user) return true;
 
   const estAdmin = ['admin', 'superadmin'].includes(user.poste);
   if (!estAdmin && String(user.id_utilisateur ?? user.id) !== idCible) {
@@ -51,6 +47,8 @@ async function getPreferences(req, res) {
     if (!rows || rows.length === 0) {
       return res.json({
         mode_defaut: 'push',
+        mode_allege: false,
+        disponibilite_hors_ligne: true,
         evenements: DEFAULT_EVENTS,
       });
     }
@@ -59,6 +57,8 @@ async function getPreferences(req, res) {
 
     res.json({
       mode_defaut: pref.mode_defaut || 'push',
+      mode_allege: !!pref.mode_allege,
+      disponibilite_hors_ligne: !!pref.disponibilite_hors_ligne,
       evenements: parseEvenements(pref.evenements),
     });
   } catch (err) {
@@ -77,6 +77,10 @@ async function updatePreferences(req, res) {
     const modeDefautBrut = b.mode_defaut || b.defaultMode || 'push';
     const modeDefaut = MODES_VALIDES.has(modeDefautBrut) ? modeDefautBrut : 'push';
 
+    const modeAllege = b.mode_allege !== undefined ? !!b.mode_allege : false;
+    const disponibiliteHorsLigne =
+      b.disponibilite_hors_ligne !== undefined ? !!b.disponibilite_hors_ligne : true;
+
     const evenementsRaw = b.evenements || b.events;
     const evenements = JSON.stringify(
       Array.isArray(evenementsRaw) && evenementsRaw.length > 0 ? evenementsRaw : DEFAULT_EVENTS
@@ -84,17 +88,21 @@ async function updatePreferences(req, res) {
 
     await query(
       `INSERT INTO preferences_utilisateur
-        (id_utilisateur, mode_defaut, evenements)
-       VALUES (?, ?, ?)
+        (id_utilisateur, mode_defaut, mode_allege, disponibilite_hors_ligne, evenements)
+       VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
         mode_defaut = VALUES(mode_defaut),
+        mode_allege = VALUES(mode_allege),
+        disponibilite_hors_ligne = VALUES(disponibilite_hors_ligne),
         evenements = VALUES(evenements)`,
-      [idUtilisateur, modeDefaut, evenements]
+      [idUtilisateur, modeDefaut, modeAllege ? 1 : 0, disponibiliteHorsLigne ? 1 : 0, evenements]
     );
 
     res.json({
       ok: true,
       mode_defaut: modeDefaut,
+      mode_allege: modeAllege,
+      disponibilite_hors_ligne: disponibiliteHorsLigne,
       evenements: JSON.parse(evenements),
     });
   } catch (err) {
