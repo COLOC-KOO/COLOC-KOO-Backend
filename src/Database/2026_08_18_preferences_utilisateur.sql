@@ -12,3 +12,8 @@ CREATE TABLE IF NOT EXISTS `preferences_utilisateur` (
     ON DELETE CASCADE 
     ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+// ajout deux column
+ALTER TABLE preferences_utilisateur
+  ADD COLUMN mode_allege TINYINT(1) NOT NULL DEFAULT 0 AFTER mode_defaut,
+  ADD COLUMN disponibilite_hors_ligne TINYINT(1) NOT NULL DEFAULT 1 AFTER mode_allege;
