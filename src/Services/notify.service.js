@@ -1,3 +1,4 @@
+// 
 const { query } = require('./db.service');
 const mail = require('./mail.service');
 
@@ -128,4 +129,34 @@ async function notifyUser(userId, { titre, texte, lien = null, type = 'systeme',
 }
 
 
-module.exports = { notifyStaff, notifyUser, getStaffRecipients };
+// Envoie UNIQUEMENT un email a un utilisateur, sans creer d'entree in-app.
+// A utiliser quand l'utilisateur a explicitement demande "email seul"
+// (ex: notif_push=false, notif_email=true) pour ne pas polluer sa cloche
+// de notifications avec une entree qu'il n'a pas demandee.
+async function sendEmailOnly(userId, { titre, texte, lien = null, intro = null, details = null, contenuHtml = null, action = null, email = null }) {
+  console.log('[notify] sendEmailOnly() appele -> userId:', userId, '| titre:', titre);
+  try {
+    if (!userId) {
+      console.warn('[notify] sendEmailOnly() -> userId manquant, abandon.');
+      return;
+    }
+
+    let destinataire = email;
+    if (!destinataire) {
+      const [u] = await query('SELECT email FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [userId]);
+      destinataire = u && u.email ? u.email : null;
+    }
+    console.log('[notify] sendEmailOnly() -> destinataire email :', destinataire);
+    if (destinataire) {
+      const html = buildEmailHtml({ titre, texte, intro, details, contenuHtml, lien, action });
+      const ok = await mail.sendEmail(destinataire, titre, html, texte);
+      console.log('[notify] sendEmailOnly() -> mail.sendEmail() a retourne :', ok);
+    } else {
+      console.warn('[notify] sendEmailOnly() -> aucun email trouve pour userId:', userId, ', envoi annule.');
+    }
+  } catch (err) {
+    console.error('[notify] sendEmailOnly() ECHEC GENERAL :', err.message);
+  }
+}
+
+module.exports = { notifyStaff, notifyUser, getStaffRecipients, insertInApp, sendEmailOnly };

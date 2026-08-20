@@ -2,6 +2,7 @@
 const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 const notify = require('../Services/notify.service');
 const { ensureBoosterSchema } = require('../Services/booster.service');
+const { matchAlertesPourAnnonce } = require('../Services/Alertes.matching.service');
 
 // Récupère la liste des annonces filtrées
 async function list(req, res, next) {
@@ -558,6 +559,17 @@ async function updateStatus(req, res, next) {
       `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
       [statut, req.params.id]
     );
+
+    // Notifie les alertes correspondantes uniquement quand l'annonce devient active
+    if (statut === 'active') {
+      try {
+        await matchAlertesPourAnnonce(req.params.id);
+      } catch (matchErr) {
+        console.error('Erreur matchAlertesPourAnnonce:', matchErr.message);
+        // Best-effort : on ne bloque pas la réponse si le matching échoue
+      }
+    }
+
     const updated = await getByIdInternal(req.params.id);
     res.json(updated);
   } catch (err) {
