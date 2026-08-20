@@ -100,7 +100,7 @@ async function list(req, res, next) {
 
     const whereSql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     await query('SET SESSION group_concat_max_len = 1000000');
-    
+
     // Requête SQL compatible avec ONLY_FULL_GROUP_BY grâce aux fonctions d'agrégation (MAX, MIN, GROUP_CONCAT)
     const rows = await query(
       `
@@ -181,7 +181,7 @@ async function getById(req, res, next) {
   try {
     await ensureBoosterSchema();
     await query('SET SESSION group_concat_max_len = 1000000');
-    
+
     // Requête SQL corrigée avec agrégations pour éviter l'erreur ONLY_FULL_GROUP_BY
     const rows = await query(
       `
@@ -449,7 +449,7 @@ async function create(req, res, next) {
   }
 }
 
-// Mise à jour d'une annonce
+// Met à jour les champs, la chambre, les équipements, règles et photos d'une annonce existante
 async function update(req, res, next) {
   try {
     const allowed = [
@@ -545,7 +545,7 @@ async function update(req, res, next) {
   }
 }
 
-// Mise à jour du statut d'une annonce
+// Change le statut d'une annonce et calcule automatiquement sa date d'expiration lors de la publication
 async function updateStatus(req, res, next) {
   try {
     const { statut } = req.body;
@@ -553,7 +553,17 @@ async function updateStatus(req, res, next) {
     if (!statut || !allowedStatuses.includes(statut)) {
       return res.status(400).json({ message: 'Statut requis.' });
     }
-    const publicationSql = statut === 'active' ? ', date_publication = COALESCE(date_publication, NOW())' : '';
+
+    // Lors du passage à 'active' : fixe date_publication (une seule fois grâce
+    // à COALESCE) puis calcule date_expiration = date_publication + 2 mois
+    // pour un membre (offre gratuite) ou + 4 mois pour un proprio/pro (partenaire).
+    const publicationSql = statut === 'active'
+      ? `, date_publication = COALESCE(date_publication, NOW()),
+         date_expiration = DATE_ADD(
+           COALESCE(date_publication, NOW()),
+           INTERVAL CASE WHEN type_bailleur = 'membre' THEN 2 ELSE 4 END MONTH
+         )`
+      : '';
     await query(
       `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
       [statut, req.params.id]
@@ -595,6 +605,7 @@ async function getPhotoUrlsByAnnonce(id) {
   return rows.map((row) => row.url);
 }
 
+// Récupère une annonce complète (usage interne, sans passer par la réponse HTTP)
 // Récupération interne de l'annonce avec les agrégations corrigées
 // async function getByIdInternal(id) {
 //   await query('SET SESSION group_concat_max_len = 1000000');
@@ -631,7 +642,7 @@ async function getPhotoUrlsByAnnonce(id) {
 async function getByIdInternal(id) {
   await ensureBoosterSchema();
   await query('SET SESSION group_concat_max_len = 1000000');
-  
+
   const rows = await query(
     `
     SELECT a.*, 

@@ -2,6 +2,7 @@
 const dotenv = require('dotenv');
 dotenv.config();
 const { demarrerCronExpireJ7 } = require('./Cron/expireJ7.cron');
+const { demarrerCronExpired } = require('./Cron/expired.cron');
 const { createApp } = require('./app');
 const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
 const { attachRealtime } = require('./Services/realtime.service');
@@ -43,6 +44,7 @@ async function start() {
 
   // Démarre les tâches planifiées (cron) une fois le serveur bien lancé
   demarrerCronExpireJ7();
+  demarrerCronExpired();
 
   process.on('unhandledRejection', err => {
     console.error('Erreur non geree:', err);
@@ -58,7 +60,7 @@ async function start() {
 if (require.main === module) {
   start().catch(err => {
     console.error('Impossible de demarrer le serveur:', err);
-    process.exit(1);  
+    process.exit(1);
   });
 }
 

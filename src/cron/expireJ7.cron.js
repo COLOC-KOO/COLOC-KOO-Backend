@@ -3,7 +3,7 @@ const { query } = require('../Services/db.service');
 const { veutEmailPourEvenement, veutPushPourEvenement } = require('../Controllers/preferences.helper');
 const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
 
-// select j -7
+// Vérification des annonces expirant dans 7 jours (J-7)
 async function verifierAnnoncesExpirantJ7() {
   console.log('[cron:expire_j7] verification des annonces expirant dans 7 jours...');
 
@@ -27,7 +27,8 @@ async function verifierAnnoncesExpirantJ7() {
     console.log('[cron:expire_j7]', annonces.length, 'annonce(s) trouvee(s) expirant dans 7 jours');
 
     for (const annonce of annonces) {
-      const dejaEnvoye = await rappelDejaEnvoyeAujourdhui(annonce.id_annonce);
+      // Vérification anti-doublon directement dans la table 'notifications'
+      const dejaEnvoye = await rappelDejaEnvoyeAujourdhui(annonce);
       if (dejaEnvoye) {
         console.log('[cron:expire_j7] rappel deja envoye aujourd\'hui pour annonce', annonce.id_annonce, ', on saute');
         continue;
@@ -35,7 +36,6 @@ async function verifierAnnoncesExpirantJ7() {
 
       await envoyerRappelExpiration(annonce);
       await envoyerNotificationPush(annonce);
-      await marquerRappelEnvoye(annonce.id_annonce);
     }
 
     console.log('[cron:expire_j7] traitement termine');
@@ -44,26 +44,19 @@ async function verifierAnnoncesExpirantJ7() {
   }
 }
 
-//  antidoublon 
-async function rappelDejaEnvoyeAujourdhui(idAnnonce) {
+// Vérification anti-doublon basée sur la table 'notifications'
+async function rappelDejaEnvoyeAujourdhui(annonce) {
   const rows = await query(
-    `SELECT 1 FROM rappels_annonces
-     WHERE id_annonce = ? AND type_rappel = 'expire_j7' AND DATE(date_envoi) = CURDATE()
+    `SELECT 1 FROM notifications 
+     WHERE id_utilisateur = ? 
+       AND type_notification = 'systeme' 
+       AND titre = 'Votre annonce expire bientôt'
+       AND lien = ?
+       AND DATE(date_creation) = CURDATE()
      LIMIT 1`,
-    [idAnnonce]
+    [annonce.id_utilisateur, `/annonces/${annonce.id_annonce}/renouveler`]
   );
   return rows.length > 0;
-}
-
-async function marquerRappelEnvoye(idAnnonce) {
-  try {
-    await query(
-      `INSERT INTO rappels_annonces (id_annonce, type_rappel, date_envoi) VALUES (?, 'expire_j7', NOW())`,
-      [idAnnonce]
-    );
-  } catch (err) {
-    console.error('[cron:expire_j7] impossible de marquer le rappel comme envoye pour annonce', idAnnonce, ':', err);
-  }
 }
 
 async function envoyerNotificationPush(annonce) {
@@ -136,7 +129,8 @@ async function envoyerRappelExpiration(annonce) {
     console.error('[cron:expire_j7] echec envoi email pour annonce', annonce.id_annonce, ':', err);
   }
 }
-// a 8h 
+
+// Planification tous les jours à 8h00
 function demarrerCronExpireJ7() {
   cron.schedule('0 8 * * *', () => {
     verifierAnnoncesExpirantJ7();
