@@ -6,7 +6,7 @@ async function getAlertes(req, res) {
     const rows = await query(
       `SELECT r.*, v.nom_ville
          FROM recherches_sauvegardees r
-         LEFT JOIN villes v ON v.id_ville = r.id_ville
+         INNER JOIN villes v ON v.id_ville = r.id_ville
         WHERE r.id_utilisateur = ?
         ORDER BY r.date_creation DESC`,
       [req.params.idUtilisateur]
@@ -22,6 +22,23 @@ async function getAlertes(req, res) {
 async function createAlerte(req, res) {
   try {
     const b = req.body;
+
+    // id_ville est obligatoire : on n'accepte plus un nom de ville,
+    // seulement l'id qui référence la table `villes`
+    const idVille = Number(b.id_ville);
+    if (!b.id_ville || Number.isNaN(idVille)) {
+      return res.status(400).json({ error: 'id_ville est requis et doit être un identifiant valide' });
+    }
+
+    // Vérifie que la ville existe réellement avant l'insertion
+    const villeRows = await query(
+      `SELECT id_ville FROM villes WHERE id_ville = ?`,
+      [idVille]
+    );
+    if (!villeRows.length) {
+      return res.status(400).json({ error: 'Ville introuvable pour cet id_ville' });
+    }
+
     const result = await query(
       `INSERT INTO recherches_sauvegardees
         (id_utilisateur, id_ville, quartier, prix_max, type_propriete,
@@ -29,7 +46,7 @@ async function createAlerte(req, res) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         b.id_utilisateur,
-        b.id_ville || null,
+        idVille,
         b.quartier || null,
         b.prix_max || null,
         b.types_bien && b.types_bien.length ? b.types_bien.join(',') : null,
@@ -43,6 +60,9 @@ async function createAlerte(req, res) {
     );
     res.status(201).json({ ok: true, id: result.insertId || (result[0] && result[0].insertId) });
   } catch (err) {
+    if (err.code === 'ER_NO_REFERENCED_ROW' || err.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({ error: 'id_ville invalide (clé étrangère)' });
+    }
     console.error('Erreur createAlerte:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
