@@ -1,8 +1,8 @@
 /* Server */
 const dotenv = require('dotenv');
 dotenv.config();
-const { demarrerCronExpireJ7 } = require('./Cron/expireJ7.cron');
-const { demarrerCronExpired } = require('./Cron/expired.cron');
+const { demarrerCronExpireJ7 } = require('./cron/expireJ7.cron');
+const { demarrerCronExpired } = require('./cron/expired.cron');
 const { createApp } = require('./app');
 const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
 const { attachRealtime } = require('./Services/realtime.service');

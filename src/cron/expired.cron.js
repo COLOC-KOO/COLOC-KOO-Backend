@@ -145,7 +145,7 @@ async function envoyerEmailExpiration(annonce) {
 
 // Exécution planifiée du CRON (ex: tous les jours à 10h21)
 function demarrerCronExpired() {
-  cron.schedule('23 11 * * *', () => {
+  cron.schedule('35 08 * * *', () => {
     traiterAnnoncesExpirees();
   });
   console.log('[cron:expired] tache planifiee demarree');
