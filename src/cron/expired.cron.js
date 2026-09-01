@@ -3,7 +3,7 @@ const { query } = require('../Services/db.service');
 const { veutEmailPourEvenement, veutPushPourEvenement } = require('../Controllers/preferences.helper');
 const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
 
-// select annonce status active 
+// Vérification et traitement des annonces expirées
 async function traiterAnnoncesExpirees() {
   console.log('[cron:expired] verification des annonces arrivees a expiration...');
 
@@ -28,17 +28,19 @@ async function traiterAnnoncesExpirees() {
     console.log('[cron:expired]', annonces.length, 'annonce(s) arrivee(s) a expiration');
 
     for (const annonce of annonces) {
+      // 1. Passe le statut de l'annonce à 'expired'
       await basculerStatutExpire(annonce.id_annonce);
 
-      const dejaEnvoye = await rappelDejaEnvoyeAujourdhui(annonce.id_annonce);
+      // 2. Vérifie directement dans la table 'notifications' si le rappel a déjà été envoyé aujourd'hui
+      const dejaEnvoye = await rappelDejaEnvoyeAujourdhui(annonce);
       if (dejaEnvoye) {
         console.log('[cron:expired] notification deja envoyee aujourd\'hui pour annonce', annonce.id_annonce, ', on saute');
         continue;
       }
 
+      // 3. Envoie des alertes selon les préférences de l'utilisateur
       await envoyerEmailExpiration(annonce);
       await envoyerNotificationPushExpiration(annonce);
-      await marquerRappelEnvoye(annonce.id_annonce);
     }
 
     console.log('[cron:expired] traitement termine');
@@ -47,7 +49,6 @@ async function traiterAnnoncesExpirees() {
   }
 }
 
-//notifications
 async function basculerStatutExpire(idAnnonce) {
   try {
     await query(
@@ -60,26 +61,19 @@ async function basculerStatutExpire(idAnnonce) {
   }
 }
 
-//anti doublon
-async function rappelDejaEnvoyeAujourdhui(idAnnonce) {
+// Vérification anti-doublon directement dans la table 'notifications'
+async function rappelDejaEnvoyeAujourdhui(annonce) {
   const rows = await query(
-    `SELECT 1 FROM rappels_annonces
-     WHERE id_annonce = ? AND type_rappel = 'expired' AND DATE(date_envoi) = CURDATE()
+    `SELECT 1 FROM notifications 
+     WHERE id_utilisateur = ? 
+       AND type_notification = 'systeme' 
+       AND titre = 'Votre annonce a expiré'
+       AND lien = ?
+       AND DATE(date_creation) = CURDATE()
      LIMIT 1`,
-    [idAnnonce]
+    [annonce.id_utilisateur, `/annonces/${annonce.id_annonce}/renouveler`]
   );
   return rows.length > 0;
-}
-
-async function marquerRappelEnvoye(idAnnonce) {
-  try {
-    await query(
-      `INSERT INTO rappels_annonces (id_annonce, type_rappel, date_envoi) VALUES (?, 'expired', NOW())`,
-      [idAnnonce]
-    );
-  } catch (err) {
-    console.error('[cron:expired] impossible de marquer le rappel comme envoye pour annonce', idAnnonce, ':', err);
-  }
 }
 
 async function envoyerNotificationPushExpiration(annonce) {
@@ -149,12 +143,12 @@ async function envoyerEmailExpiration(annonce) {
   }
 }
 
-// a 8h 05
+// Exécution planifiée du CRON (ex: tous les jours à 10h21)
 function demarrerCronExpired() {
-  cron.schedule('5 8 * * *', () => {
+  cron.schedule('23 11 * * *', () => {
     traiterAnnoncesExpirees();
   });
-  console.log('[cron:expired] tache planifiee demarree (tous les jours a 8h05)');
+  console.log('[cron:expired] tache planifiee demarree');
 }
 
 module.exports = { demarrerCronExpired, traiterAnnoncesExpirees };
