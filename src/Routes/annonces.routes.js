@@ -3,6 +3,7 @@ const fs = require('fs');
 const multer = require('multer');
 const router = require('express').Router();
 const controller = require('../Controllers/annonces.controller');
+const { renouvelerAnnonce } = require('../Controllers/renouveler.controller');
 const { requireAuth, requireRole, optionalAuth } = require('../Middleware/auth.middleware');
 
 const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
@@ -23,6 +24,8 @@ router.post('/upload', requireAuth, upload.array('photos', 12), controller.uploa
 router.post('/', requireAuth, controller.create);
 router.patch('/:id', requireAuth, controller.update);
 router.patch('/:id/status', requireAuth, requireRole('admin', 'super_admin', 'moderator'), controller.updateStatus);
+
+router.patch('/:id/renouveler', requireAuth, renouvelerAnnonce);
 router.delete('/:id', requireAuth, controller.remove);
 
-module.exports = router;
+module.exports = router;  

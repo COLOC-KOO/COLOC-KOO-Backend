@@ -8,7 +8,7 @@ async function verifierAnnoncesExpirantJ7() {
   console.log('[cron:expire_j7] verification des annonces expirant dans 7 jours...');
 
   try {
-    const annonces = await query(
+   const annonces = await query(
       `SELECT
          a.id_annonce,
          a.titre,
@@ -21,9 +21,10 @@ async function verifierAnnoncesExpirantJ7() {
        FROM annonces a
        JOIN utilisateurs u ON u.id_utilisateur = a.id_utilisateur
        WHERE a.statut = 'active'
-         AND DATE(a.date_expiration) = DATE(DATE_ADD(NOW(), INTERVAL 7 DAY))`
+         AND a.date_expiration IS NOT NULL
+         AND DATE(a.date_expiration) >= CURDATE()
+         AND DATEDIFF(a.date_expiration, NOW()) = 7`
     );
-
     console.log('[cron:expire_j7]', annonces.length, 'annonce(s) trouvee(s) expirant dans 7 jours');
 
     for (const annonce of annonces) {
@@ -132,7 +133,7 @@ async function envoyerRappelExpiration(annonce) {
 
 // Planification tous les jours à 8h00
 function demarrerCronExpireJ7() {
-  cron.schedule('0 8 * * *', () => {
+  cron.schedule('50 08 * * *', () => {
     verifierAnnoncesExpirantJ7();
   });
   console.log('[cron:expire_j7] tache planifiee demarree (tous les jours a 8h00)');

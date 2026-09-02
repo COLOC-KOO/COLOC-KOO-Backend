@@ -1,6 +1,6 @@
 const { query, insertAndGetId } = require('../Services/db.service');
 const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
-const { veutEmailPourEvenement } = require('./preferences.helper');
+const { veutEmailPourEvenement, veutPushPourEvenement } = require('./preferences.helper');
 
 async function envoyerEmailNouveauMessage(message) {
   if (!message || !message.destinataire_email) {
@@ -156,11 +156,18 @@ async function send(req, res, next) {
       [req.user.id, id_destinataire, id_annonce || null, sujet || null, contenu, message_parent || null]
     );
 
-    await query(
-      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-       VALUES (?, 'message', ?, ?, ?)`,
-      [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/compte?tab=messages&user=${req.user.id}`]
-    ).catch(() => {});
+    // On ne crée la notification "in-app" / push que si le destinataire n'a pas
+    // désactivé le push pour l'événement 'new_msg' dans ses préférences.
+    const veutPush = await veutPushPourEvenement(id_destinataire, 'new_msg');
+    if (veutPush) {
+      await query(
+        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+         VALUES (?, 'message', ?, ?, ?)`,
+        [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/compte?tab=messages&user=${req.user.id}`]
+      ).catch(() => {});
+    } else {
+      console.log('[messages] destinataire', id_destinataire, 'a desactive le push pour new_msg, notification non creee');
+    }
 
     const [message] = await query(
       `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
@@ -175,7 +182,11 @@ async function send(req, res, next) {
       [id]
     );
 
-    req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
+    // Le message temps réel (socket) sert aussi de "push" pour l'utilisateur connecté :
+    // on l'envoie seulement si le destinataire accepte le push pour cet événement.
+    if (veutPush) {
+      req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
+    }
 
     res.status(201).json(message || { id_message: id });
 
