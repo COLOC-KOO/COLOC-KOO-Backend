@@ -46,6 +46,17 @@ async function main() {
   await query("INSERT IGNORE INTO villes (nom_ville, id_region) SELECT 'Antsiranana', id_region FROM regions WHERE nom_region = 'Diana'");
 
   const hash = await bcrypt.hash('Password123!', 10);
+  
+  // Nouvel utilisateur ajouté
+  await query(
+    `INSERT INTO utilisateurs
+     (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, est_verifie, statut, id_role)
+     VALUES
+     ('manantsoagary2407@gmail.com', '+261340000005', ?, 'Manantsoa', 'Gary', 25, 'Colocataire', 'Etudiant', 1, 'active', (SELECT id_role FROM roles WHERE nom_role = 'coloc' LIMIT 1))
+     ON DUPLICATE KEY UPDATE nom = VALUES(nom)`,
+    [hash]
+  );
+
   await query(
     `INSERT INTO utilisateurs
      (email, telephone, mot_de_passe, nom, prenom, age, bio, profession, est_verifie, statut, id_role)
@@ -101,4 +112,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
