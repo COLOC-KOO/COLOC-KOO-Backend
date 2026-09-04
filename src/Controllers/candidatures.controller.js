@@ -542,6 +542,7 @@ async function remove(req, res, next) {
 
 async function decide(req, res, next) {
   try {
+    console.log("1. Début decide", req.params.id, req.body.action);
     const candidatureId = Number(req.params.id);
     const { action, message } = req.body;
     if (!Number.isInteger(candidatureId)) {
@@ -592,66 +593,94 @@ async function decide(req, res, next) {
       return res.status(403).json({ message: 'Vous ne pouvez pas gérer cette candidature.' });
     }
 
+    console.log("2. Candidature trouvée, gestion autorisée");
     const equipeId = await ensureEquipeForAnnonce(candidature.id_annonce, candidature.titre);
+    console.log("2b. equipeId résolu:", equipeId);
 
     if (action === 'accept') {
       const wasAlreadyValidated = ['signature', 'acceptee'].includes(String(candidature.statut));
+
+      console.log("3. Avant UPDATE candidatures");
       await query('UPDATE candidatures SET statut = ? WHERE id_candidature = ?', [normalizeStatus('acceptee'), candidatureId]);
+      console.log("3b. UPDATE candidatures OK");
+
+      console.log("4. Avant UPDATE equipes");
       await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['selected', equipeId]);
+      console.log("4b. UPDATE equipes OK");
+
+      console.log("5. Avant INSERT membres_equipes");
       await query(
         `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
-         VALUES (?, ?, 'accepted')`,
+         VALUES (?, ?, 'accepted')
+         ON DUPLICATE KEY UPDATE statut = VALUES(statut)`,
         [equipeId, candidature.id_utilisateur]
       );
+      console.log("5b. INSERT membres_equipes OK");
 
       // La discussion est créée après l'acceptation. Une erreur de messagerie
       // ne doit jamais annuler la décision déjà enregistrée.
       let discussionGroup = null;
       try {
+        console.log("6. Avant ensureAcceptedColocDiscussionGroup");
         discussionGroup = await ensureAcceptedColocDiscussionGroup({
           annonceId: candidature.id_annonce,
           ownerId: candidature.owner_id,
           annonceTitre: candidature.titre,
         });
+        console.log("6b. ensureAcceptedColocDiscussionGroup OK", discussionGroup?.id);
+
         if (!wasAlreadyValidated) {
+          console.log("7. Avant notifyAcceptedColocGroup");
           await notifyAcceptedColocGroup({
             group: discussionGroup,
             realtime: req.app.get('realtime'),
           });
+          console.log("7b. notifyAcceptedColocGroup OK");
         }
       } catch (groupError) {
-        console.error('Impossible de créer le groupe de discussion des colocataires acceptés:', groupError);
+        console.error('❌ Erreur groupe de discussion:', groupError);
       }
 
+      console.log("8. Envoi réponse finale accept");
       return res.json({ message: 'Candidature acceptée.', equipeId, discussionGroup });
     }
 
     if (action === 'refuse') {
+      console.log("3. Avant UPDATE candidatures (refuse)");
       await query('UPDATE candidatures SET statut = ? WHERE id_candidature = ?', [normalizeStatus('refusee'), candidatureId]);
+      console.log("4. Avant UPDATE equipes (refuse)");
       await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['rejected', equipeId]);
+      console.log("5. Avant INSERT membres_equipes (refuse)");
       await query(
         `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
-         VALUES (?, ?, 'refused')`,
+         VALUES (?, ?, 'refused')
+         ON DUPLICATE KEY UPDATE statut = VALUES(statut)`,
         [equipeId, candidature.id_utilisateur]
       );
+      console.log("5b. INSERT membres_equipes OK (refuse)");
       try {
+        console.log("6. Avant closeRejectedCandidateGroups");
         await closeRejectedCandidateGroups({
           annonceId: candidature.id_annonce,
           candidateId: candidature.id_utilisateur,
           realtime: req.app.get('realtime'),
         });
+        console.log("6b. closeRejectedCandidateGroups OK");
       } catch (groupError) {
-        console.error('Impossible de clôturer le groupe de candidature refusée:', groupError);
+        console.error('❌ Erreur clôture groupe refusé:', groupError);
       }
+      console.log("8. Envoi réponse finale refuse");
       return res.json({ message: 'Candidature refusée.', equipeId });
     }
   } catch (err) {
+    console.error("❌ ERREUR decide():", err);
     next(err);
   }
 }
 
 async function launchColocation(req, res, next) {
   try {
+    console.log("L1. Début launchColocation, id:", req.params.id);
     const annonceId = Number(req.params.id);
     const rows = await query(
       `SELECT a.id_annonce, a.id_utilisateur, a.titre, a.total_colocataires
@@ -659,8 +688,10 @@ async function launchColocation(req, res, next) {
        WHERE a.id_annonce = ? LIMIT 1`,
       [annonceId]
     );
+    console.log("L2. Annonce trouvée:", rows.length);
 
     if (!rows.length) {
+      console.log("L2b. Annonce introuvable, 404");
       return res.status(404).json({ message: 'Annonce introuvable.' });
     }
 
@@ -670,11 +701,16 @@ async function launchColocation(req, res, next) {
     const canLaunch = currentUserId === Number(annonce.id_utilisateur)
       || ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
 
+    console.log("L3. canLaunch:", canLaunch, "| currentUserId:", currentUserId, "| owner:", annonce.id_utilisateur, "| role:", userRole);
+
     if (!canLaunch) {
+      console.log("L3b. Refus 403");
       return res.status(403).json({ message: 'Vous ne pouvez pas lancer cette colocation.' });
     }
 
     const acceptedStatuses = [...new Set(['acceptee', normalizeStatus('acceptee')])];
+    console.log("L4. acceptedStatuses:", acceptedStatuses);
+
     const accepted = await query(
       `SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, u.nom, u.prenom, u.email
        FROM candidatures c
@@ -683,16 +719,28 @@ async function launchColocation(req, res, next) {
        ORDER BY c.date_creation ASC`,
       [annonceId, ...acceptedStatuses]
     );
+    console.log("L5. accepted.length:", accepted.length);
 
     const requiredCount = Number(annonce.total_colocataires) || 3;
+    console.log("L5b. requiredCount:", requiredCount);
+
     if (accepted.length < requiredCount) {
+      console.log("L5c. Pas assez de candidats, 400");
       return res.status(400).json({ message: `Au moins ${requiredCount} candidats acceptés sont requis.` });
     }
 
+    console.log("L6. Avant ensureEquipeForAnnonce");
     const equipeId = await ensureEquipeForAnnonce(annonceId, annonce.titre);
-    await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['complete', equipeId]);
+    console.log("L6b. equipeId:", equipeId);
 
+    console.log("L7. Avant UPDATE equipes -> complete");
+    await query('UPDATE equipes SET statut = ? WHERE id_equipe = ?', ['complete', equipeId]);
+    console.log("L7b. UPDATE equipes OK");
+
+    let loopIndex = 0;
     for (const candidature of accepted) {
+      loopIndex++;
+      console.log(`L8.${loopIndex} Boucle candidature_membres pour candidature ${candidature.id_candidature}`);
       const existingMemberRows = await query(
         'SELECT id FROM candidature_membres WHERE id_candidature = ? LIMIT 1',
         [candidature.id_candidature]
@@ -701,6 +749,7 @@ async function launchColocation(req, res, next) {
       const initiales = [candidature.prenom, candidature.nom].filter(Boolean).map((value) => String(value).charAt(0)).join('').slice(0, 2).toUpperCase() || 'MB';
 
       if (existingMemberRows.length) {
+        console.log(`L8.${loopIndex}a UPDATE candidature_membres existant`);
         await query(
           `UPDATE candidature_membres
            SET nom = ?, initiales = ?, statut = ?, profession = ?, age = ?
@@ -708,25 +757,36 @@ async function launchColocation(req, res, next) {
           [memberName, initiales, 'accepte', null, null, candidature.id_candidature]
         );
       } else {
+        console.log(`L8.${loopIndex}b INSERT candidature_membres nouveau`);
         await query(
           `INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age)
            VALUES (?, ?, ?, ?, ?, ?)`,
           [candidature.id_candidature, memberName, initiales, 'accepte', null, null]
         );
       }
+      console.log(`L8.${loopIndex}c OK`);
     }
 
+    console.log("L9. Avant DELETE membres_equipes");
     await query('DELETE FROM membres_equipes WHERE id_equipe = ?', [equipeId]);
+    console.log("L9b. DELETE membres_equipes OK");
+
+    loopIndex = 0;
     for (const candidature of accepted) {
+      loopIndex++;
+      console.log(`L10.${loopIndex} INSERT membres_equipes pour user ${candidature.id_utilisateur}`);
       await query(
         `INSERT INTO membres_equipes (id_equipe, id_utilisateur, statut)
          VALUES (?, ?, ?)`,
         [equipeId, candidature.id_utilisateur, 'accepted']
       );
+      console.log(`L10.${loopIndex}b OK`);
     }
 
+    console.log("L11. Envoi réponse finale launchColocation");
     return res.json({ message: 'Colocation lancée.', equipeId, membres: accepted });
   } catch (err) {
+    console.error("❌ ERREUR launchColocation():", err);
     next(err);
   }
 }
