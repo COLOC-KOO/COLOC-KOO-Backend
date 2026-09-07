@@ -359,56 +359,20 @@ async function listProfilsParVille(req, res, next) {
   }
 }
 
-// async function create(req, res, next) {
-//   try {
-//     const { id_annonce, message, statut = 'envoyee', membres = [] } = req.body;
-//     if (!id_annonce) {
-//       return res.status(400).json({ message: 'Annonce requise.' });
-//     }
-
-//     const id = await insertAndGetId(
-//       `INSERT INTO candidatures (id_utilisateur, id_annonce, message, statut) VALUES (?, ?, ?, ?)`,
-//       [req.user.id, id_annonce, message || null, normalizeStatus(statut)]
-//     );
-
-//     for (const membre of membres) {
-//       if (!membre?.nom) continue;
-//       await query(
-//         'INSERT INTO candidature_membres (id_candidature, nom, initiales, statut, profession, age) VALUES (?, ?, ?, ?, ?, ?)',
-//         [id, membre.nom, membre.initiales || null, membre.statut || 'en_attente', membre.profession || null, membre.age || null]
-//       );
-//     }
-
-//     const created = await query('SELECT * FROM candidatures WHERE id_candidature = ? LIMIT 1', [id]);
-//     res.status(201).json(mapCandidature(created[0]));
-//   } catch (err) {
-//     next(err);
-//   }
-// }
-
 async function create(req, res, next) {
   try {
-    console.log("📥 ===== CREATE CANDIDATURE =====");
-    console.log("📥 req.user:", req.user);
-    console.log("📥 req.user.id:", req.user?.id);
-    console.log("📥 req.body:", req.body);
-
     const { id_annonce, message, statut = 'envoyee', membres = [] } = req.body;
     
     if (!id_annonce) {
-      console.log("❌ id_annonce manquant");
       return res.status(400).json({ message: 'Annonce requise.' });
     }
 
-    // Vérifier que req.user.id existe
     if (!req.user || !req.user.id) {
-      console.log("❌ Utilisateur non authentifié ou ID manquant");
       return res.status(401).json({ message: 'Utilisateur non authentifié.' });
     }
 
     const annonce = await getAnnonceOwner(id_annonce);
     if (!annonce) {
-      console.log("❌ Annonce introuvable");
       return res.status(404).json({ message: 'Annonce introuvable.' });
     }
 
@@ -419,10 +383,7 @@ async function create(req, res, next) {
       [req.user.id, id_annonce]
     );
 
-    console.log(`📊 Candidatures existantes: ${existing[0].count}`);
-
     if (existing[0].count > 0) {
-      console.log("⚠️ DOUBLON DÉTECTÉ");
       return res.status(400).json({ 
         message: 'Vous avez déjà postulé à cette annonce.'
       });
@@ -443,9 +404,6 @@ async function create(req, res, next) {
       throw err;
     }
 
-    console.log(`✅ Candidature créée avec ID: ${id}`);
-
-    // Créer une notification pour le propriétaire de l'annonce
     try {
       const notifTitle = 'Nouvelle candidature sur votre annonce';
       const notifText = `Un colocataire a postulé à votre annonce « ${annonce.titre || 'votre annonce'} ».`;
@@ -462,7 +420,6 @@ async function create(req, res, next) {
     const created = await query('SELECT * FROM candidatures WHERE id_candidature = ? LIMIT 1', [id]);
     res.status(201).json(mapCandidature(created[0]));
   } catch (err) {
-    console.error("❌ ERREUR:", err);
     next(err);
   }
 }
@@ -569,7 +526,6 @@ async function decide(req, res, next) {
       return res.status(401).json({ message: 'Utilisateur non authentifie.' });
     }
 
-    const isOwner = currentUserId === Number(candidature.owner_id);
     const isCandidate = currentUserId === Number(candidature.id_utilisateur);
 
     if (action === 'discuss') {
@@ -604,8 +560,6 @@ async function decide(req, res, next) {
         [equipeId, candidature.id_utilisateur]
       );
 
-      // La discussion est créée après l'acceptation. Une erreur de messagerie
-      // ne doit jamais annuler la décision déjà enregistrée.
       let discussionGroup = null;
       try {
         discussionGroup = await ensureAcceptedColocDiscussionGroup({
@@ -731,8 +685,6 @@ async function launchColocation(req, res, next) {
   }
 }
 
-// Bareme de prix par defaut (aligne sur la maquette candidatures v4_17_3).
-// Surchargeable par le super-admin via configuration_backoffice (cles CONTRACT_TIERS / EDL_PRIX).
 const DEFAULT_CONTRACT_TIERS = [
   { maxLoyer: 450000, prix: 27000 },
   { maxLoyer: 1350000, prix: 47000 },
@@ -745,9 +697,6 @@ async function getConfigValue(cle, fallback) {
     const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
     if (!rows.length || rows[0].valeur == null) return fallback;
     const raw = rows[0].valeur;
-    // La colonne JSON est deja parsee par mysql2. Si c'est une chaine, on tente
-    // un parse (double encodage) mais on renvoie la chaine telle quelle si ce
-    // n'est pas du JSON (ex : un gabarit HTML).
     if (typeof raw === 'string') {
       try {
         return JSON.parse(raw);
@@ -802,8 +751,6 @@ async function createContracts(req, res, next) {
       return res.status(403).json({ message: 'Vous ne pouvez pas créer ce contrat.' });
     }
 
-    // Le type de bail et la clause de solidarite sont HERITES de l'annonce (cahier des charges).
-    // Defaut raisonnable si une ancienne annonce ne les a pas encore definis.
     const type_bail = ['individuel', 'collectif'].includes(annonce.type_bail) ? annonce.type_bail : 'collectif';
     const clause_solidarite = ['avec', 'sans'].includes(annonce.clause_solidarite) ? annonce.clause_solidarite : 'sans';
 
@@ -852,7 +799,6 @@ async function createContracts(req, res, next) {
       });
     }
 
-    // Prix = SOMME de toutes les offres actives du type dans services_ckoo (cle_service contrat_* / edl_*).
     const sumOffers = async (likePrefix) => {
       const r = await query("SELECT COALESCE(SUM(prix), 0) AS total FROM services_ckoo WHERE cle_service LIKE ? AND est_actif = 1", [likePrefix]);
       return Number(r[0]?.total || 0);
@@ -867,7 +813,6 @@ async function createContracts(req, res, next) {
 
     for (const type of levels) {
       const montant = priceFor(type);
-      // Reutilise le contrat existant de ce type pour l'annonce (pas de doublon).
       const existingRows = await query(
         'SELECT id_contrat FROM contrats WHERE id_annonce = ? AND type = ? ORDER BY id_contrat LIMIT 1',
         [annonceId, type]
@@ -929,8 +874,6 @@ async function createContracts(req, res, next) {
   }
 }
 
-// Paiement Mobile Money manuel d'un contrat (maquette : l'usager saisit sa reference,
-// le back-office qualifie ensuite). Aucune passerelle bancaire automatique.
 const MOBILE_MONEY_MOYENS = ['MVOLA', 'Orange Money'];
 
 async function submitContractPayment(req, res, next) {
@@ -964,9 +907,6 @@ async function submitContractPayment(req, res, next) {
     const userRole = String(req.user?.role || req.user?.poste || '').toLowerCase();
     const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
 
-    // L'honoraire de service Coloc'KOO est reparti entre les colocataires : chaque
-    // colocataire regle SA PART, et ce paiement vaut acceptation du contrat.
-    // On se base sur les parties du contrat (source fiable des colocataires concernes).
     const partyRows = await query(
       'SELECT id_utilisateur, role FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL',
       [contratId]
@@ -979,7 +919,6 @@ async function submitContractPayment(req, res, next) {
       return res.status(403).json({ message: 'Seuls les colocataires du contrat peuvent régler leur part.' });
     }
 
-    // Empeche le double paiement de la meme personne pour ce contrat.
     const already = await query(
       "SELECT id_paiement FROM paiements WHERE id_contrat = ? AND id_utilisateur = ? AND service_type = 'contrat' LIMIT 1",
       [contratId, currentUserId]
@@ -988,7 +927,6 @@ async function submitContractPayment(req, res, next) {
       return res.status(409).json({ message: 'Vous avez déjà réglé votre part de ce contrat.' });
     }
 
-    // Part de chacun = forfait Coloc'KOO / nombre de colocataires.
     const nbColoc = Math.max(1, colocIds.length || Number(contrat.total_colocataires) || 1);
     const part = Math.ceil(Number(contrat.montant_total || 0) / nbColoc);
 
@@ -1000,7 +938,6 @@ async function submitContractPayment(req, res, next) {
       [reference, currentUserId, contratId, contrat.id_annonce, part, part, moyen_paiement, String(reference_operateur).trim()]
     );
 
-    // Le contrat est valide quand TOUS les colocataires ont regle leur part.
     const paidRows = await query(
       "SELECT COUNT(DISTINCT id_utilisateur) AS n FROM paiements WHERE id_contrat = ? AND service_type = 'contrat'",
       [contratId]
@@ -1028,34 +965,212 @@ async function submitContractPayment(req, res, next) {
   }
 }
 
-// Vérifier si un utilisateur a déjà postulé à une annonce spécifique
-// async function checkUserApplied(req, res, next) {
-//   try {
-//     const { annonceId, userId } = req.query;
-    
-//     if (!annonceId || !userId) {
-//       return res.status(400).json({ 
-//         message: 'Les paramètres annonceId et userId sont requis.' 
-//       });
-//     }
+// ==========================================================================
+// NOUVELLE MÉTHODE : ENREGISTREMENT DE TOUTES LES ÉTAPES DU CONTRACT WIZARD
+// ==========================================================================
+async function saveContractWizardStep(req, res, next) {
+  try {
+    const annonceId = Number(req.params.id);
+    const {
+      step,              // 'offer' | 'bail' | 'contenu' | 'paiement' | 'done'
+      contractMode,      // 'contrat' | 'edl' | 'both'
+      bailType,          // 'individuel' | 'collectif'
+      solidarite,        // 'avec' | 'sans'
+      moyenPaiement,     // 'Orange Money' | 'MVOLA'
+      payRef,            // Référence de transaction Mobile Money
+    } = req.body;
 
-//     const rows = await query(
-//       `SELECT COUNT(*) as count 
-//        FROM candidatures c
-//        WHERE c.id_annonce = ? AND c.id_utilisateur = ?`,
-//       [annonceId, userId]
-//     );
+    if (!Number.isInteger(annonceId) || annonceId <= 0) {
+      return res.status(400).json({ message: "Identifiant d'annonce invalide." });
+    }
 
-//     res.json({ 
-//       hasApplied: rows[0].count > 0,
-//       count: rows[0].count
-//     });
-//   } catch (err) {
-//     next(err);
-//   }
-// }
+    const annonceRows = await query(
+      `SELECT id_annonce, id_utilisateur, titre, total_colocataires, type_bail, clause_solidarite
+       FROM annonces WHERE id_annonce = ? LIMIT 1`,
+      [annonceId]
+    );
+    if (!annonceRows.length) {
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+    const annonce = annonceRows[0];
+    const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
 
-// Dans candidatures.controller.js
+    // 1. Étape 'bail' : Mise à jour du type de bail et clause de solidarité
+    if (bailType || solidarite) {
+      const updates = [];
+      const params = [];
+      if (['individuel', 'collectif'].includes(bailType)) {
+        updates.push('type_bail = ?');
+        params.push(bailType);
+      }
+      if (['avec', 'sans'].includes(solidarite)) {
+        updates.push('clause_solidarite = ?');
+        params.push(solidarite);
+      }
+      if (updates.length > 0) {
+        params.push(annonceId);
+        await query(`UPDATE annonces SET ${updates.join(', ')} WHERE id_annonce = ?`, params);
+      }
+    }
+
+    // 2. Récupération des colocataires retenus
+    const acceptedCandidates = await query(
+      `SELECT c.id_candidature, c.id_utilisateur, u.nom, u.prenom, u.email, u.telephone
+       FROM candidatures c
+       JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+       WHERE c.id_annonce = ? AND c.statut IN ('acceptee', 'signature', 'convention')
+       ORDER BY c.date_creation ASC`,
+      [annonceId]
+    );
+
+    // 3. Étapes 'contenu', 'paiement', 'done' : Création / mise à jour des contrats
+    const createdContracts = [];
+    const mode = contractMode || 'contrat';
+    const modesToCreate = mode === 'both' ? ['contrat', 'edl'] : [mode];
+
+    const sumOffers = async (likePrefix) => {
+      const r = await query(
+        'SELECT COALESCE(SUM(prix), 0) AS total FROM services_ckoo WHERE cle_service LIKE ? AND est_actif = 1',
+        [likePrefix]
+      );
+      return Number(r[0]?.total || 0);
+    };
+
+    const contratTotal = (await sumOffers('contrat%')) || 27000;
+    const edlTotal = (await sumOffers('edl%')) || 10000;
+
+    for (const type of modesToCreate) {
+      const montant = type === 'edl' ? edlTotal : contratTotal;
+
+      let contrat = (await query(
+        'SELECT id_contrat, reference, statut, montant_total FROM contrats WHERE id_annonce = ? AND type = ? LIMIT 1',
+        [annonceId, type]
+      ))[0];
+
+      let id_contrat;
+      if (contrat) {
+        id_contrat = contrat.id_contrat;
+        await query(
+          `UPDATE contrats 
+           SET type_bail = ?, clause_solidarite = ?, montant_total = ?
+           WHERE id_contrat = ?`,
+          [
+            type === 'contrat' ? (bailType || annonce.type_bail || 'collectif') : null,
+            type === 'contrat' ? (solidarite || annonce.clause_solidarite || 'sans') : null,
+            montant,
+            id_contrat,
+          ]
+        );
+      } else {
+        const reference = `CT-${Date.now().toString().slice(-8)}`;
+        id_contrat = await insertAndGetId(
+          `INSERT INTO contrats (reference, id_annonce, type, type_bail, clause_solidarite, statut, montant_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            reference,
+            annonceId,
+            type,
+            type === 'contrat' ? (bailType || annonce.type_bail || 'collectif') : null,
+            type === 'contrat' ? (solidarite || annonce.clause_solidarite || 'sans') : null,
+            type === 'edl' ? 'a-planifier' : 'a-emettre',
+            montant,
+          ]
+        );
+      }
+
+      // Reconstitution propre des parties du contrat
+      await query('DELETE FROM parties_contrats WHERE id_contrat = ?', [id_contrat]);
+
+      const owner = (await query('SELECT id_utilisateur, nom, prenom, email, telephone FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [annonce.id_utilisateur]))[0];
+      if (owner) {
+        await query(
+          `INSERT INTO parties_contrats (id_contrat, id_utilisateur, nom_complet, role, telephone, email, commentaire)
+           VALUES (?, ?, ?, 'proprietaire', ?, ?, 'Propriétaire bailleur')`,
+          [id_contrat, owner.id_utilisateur, `${owner.prenom || ''} ${owner.nom || ''}`.trim(), owner.telephone || null, owner.email || null]
+        );
+      }
+
+      for (const candidate of acceptedCandidates) {
+        await query(
+          `INSERT INTO parties_contrats (id_contrat, id_utilisateur, nom_complet, role, telephone, email, commentaire)
+           VALUES (?, ?, ?, 'colocataire', ?, ?, 'Colocataire accepté')`,
+          [id_contrat, candidate.id_utilisateur, `${candidate.prenom || ''} ${candidate.nom || ''}`.trim(), candidate.telephone || null, candidate.email || null]
+        );
+      }
+
+      const freshContrat = (await query('SELECT * FROM contrats WHERE id_contrat = ? LIMIT 1', [id_contrat]))[0];
+      createdContracts.push(freshContrat);
+    }
+
+    // 4. Étape 'paiement' : Enregistrement de la référence Mobile Money
+    let paymentInfo = null;
+    if (payRef && createdContracts.length > 0) {
+      const primaryContract = createdContracts[0];
+      const nbColocs = Math.max(1, acceptedCandidates.length || Number(annonce.total_colocataires) || 1);
+      const myShare = Math.ceil(Number(primaryContract.montant_total || 0) / nbColocs);
+
+      const existingPay = (await query(
+        `SELECT id_paiement, reference FROM paiements 
+         WHERE id_contrat = ? AND id_utilisateur = ? AND service_type = 'contrat' LIMIT 1`,
+        [primaryContract.id_contrat, currentUserId]
+      ))[0];
+
+      let payReference = existingPay?.reference;
+      if (!existingPay) {
+        payReference = `PAY-${Date.now().toString().slice(-8)}`;
+        await insertAndGetId(
+          `INSERT INTO paiements 
+           (reference, id_utilisateur, id_contrat, id_annonce, montant_du, montant_recu, moyen_paiement, service_type, statut, date_paiement, reference_operateur)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'contrat', 'a-verifier', CURDATE(), ?)`,
+          [
+            payReference,
+            currentUserId,
+            primaryContract.id_contrat,
+            annonceId,
+            myShare,
+            myShare,
+            moyenPaiement || 'Orange Money',
+            String(payRef).trim(),
+          ]
+        );
+      }
+
+      const paidCountRow = await query(
+        `SELECT COUNT(DISTINCT id_utilisateur) as count FROM paiements 
+         WHERE id_contrat = ? AND service_type = 'contrat'`,
+        [primaryContract.id_contrat]
+      );
+      const paidCount = Number(paidCountRow[0]?.count || 1);
+      const allPaid = paidCount >= nbColocs;
+
+      if (allPaid) {
+        await query(
+          "UPDATE contrats SET statut = 'emis', date_emission = COALESCE(date_emission, NOW()) WHERE id_contrat = ?",
+          [primaryContract.id_contrat]
+        );
+      }
+
+      paymentInfo = {
+        reference: payReference,
+        montant: myShare,
+        paidCount,
+        total: nbColocs,
+        allPaid,
+      };
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Étape enregistrée avec succès.',
+      step: step || 'done',
+      contracts: createdContracts,
+      paymentInfo,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function checkUserApplied(req, res, next) {
   try {
     const { annonceId, userId } = req.query;
@@ -1064,12 +1179,6 @@ async function checkUserApplied(req, res, next) {
       return res.status(400).json({ 
         message: 'Les paramètres annonceId et userId sont requis.' 
       });
-    }
-
-    // Si l'utilisateur est authentifié, on vérifie si c'est le même
-    if (req.user && req.user.id !== parseInt(userId)) {
-      // Optionnel : vérifier si l'utilisateur a le droit de voir cette info
-      // Pour l'instant, on laisse passer
     }
 
     const rows = await query(
@@ -1088,7 +1197,6 @@ async function checkUserApplied(req, res, next) {
   }
 }
 
-// Récupérer toutes les candidatures pour une annonce spécifique
 async function listByAnnonce(req, res, next) {
   try {
     const { id } = req.params;
@@ -1122,7 +1230,6 @@ async function listByAnnonce(req, res, next) {
       );
     }
 
-    // Mapper les résultats avec les membres
     const result = rows.map(row => {
       const membres = membresRows.filter(m => m.id_candidature === row.id_candidature);
       return {
@@ -1143,7 +1250,6 @@ async function listByAnnonce(req, res, next) {
   }
 }
 
-// ===== Generation du vrai document de contrat (gabarit DB + donnees reelles) =====
 function fmtNumber(n) {
   return String(Number(n) || 0).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
@@ -1156,7 +1262,12 @@ function frDate(value) {
   }
 }
 function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 async function generateContractDocument(req, res, next) {
@@ -1186,7 +1297,6 @@ async function generateContractDocument(req, res, next) {
     const isStaff = ['super_admin', 'superadmin', 'admin', 'moderator', 'moderateur'].includes(userRole);
 
     const parties = await query('SELECT id_utilisateur, nom_complet, role FROM parties_contrats WHERE id_contrat = ? ORDER BY role, id', [contratId]);
-    // Le proprietaire, les colocataires (parties du contrat) et le staff peuvent lire le document.
     const isParty = parties.some((p) => Number(p.id_utilisateur) === currentUserId);
     const canView = currentUserId === Number(c.owner_id) || isStaff || isParty;
     if (!canView) return res.status(403).json({ message: 'Accès refusé à ce document.' });
@@ -1220,8 +1330,8 @@ async function generateContractDocument(req, res, next) {
       loyer: fmtNumber(c.prix_loyer),
       charges: fmtNumber(c.prix_charges),
       caution: fmtNumber(c.montant_garantie || c.prix_loyer),
-      clauses_list: clausesHtml, // deja du HTML
-      signatures: signaturesHtml, // deja du HTML
+      clauses_list: clausesHtml,
+      signatures: signaturesHtml,
     };
 
     const templateKey = c.type === 'edl' ? 'CONTRACT_EDL_TEMPLATE' : 'CONTRACT_DOCUMENT_TEMPLATE';
@@ -1265,7 +1375,6 @@ ${bodyHtml}
   }
 }
 
-// Contrats d'une annonce vus par un colocataire (ou l'owner/staff) : sa part + s'il a paye.
 async function myContractsForAnnonce(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
@@ -1306,15 +1415,6 @@ async function myContractsForAnnonce(req, res, next) {
   } catch (err) {
     next(err);
   }
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function formatDateFr(value) {
@@ -1412,8 +1512,6 @@ async function sendOfficialColocationEmails(annonceId, annonce) {
   return { sent, total: candidates.filter((candidate) => candidate.email).length };
 }
 
-// Lancement OFFICIEL de la colocation par le deposant, une fois que TOUS les
-// colocataires ont regle leur part de chaque contrat.
 async function lancerColocationOfficielle(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
@@ -1486,6 +1584,7 @@ module.exports = {
   launchColocation,
   createContracts,
   submitContractPayment,
+  saveContractWizardStep,
   generateContractDocument,
   myContractsForAnnonce,
   lancerColocationOfficielle,
