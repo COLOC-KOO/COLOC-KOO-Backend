@@ -723,10 +723,20 @@ async function resolveContractPricing() {
   return { edlPrix, contratPrixFor };
 }
 
+// ==========================================================================
+// MÉTHODE MODIFIÉE : PRISE EN COMPTE EXACTE DU BAIL INDIVIDUEL ET DE LA CLAUSE
+// ==========================================================================
 async function createContracts(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
-    const { mode } = req.body;
+    const { 
+      mode, 
+      bailType, 
+      type_bail: reqTypeBail, 
+      solidarite, 
+      clause_solidarite: reqSolidarite 
+    } = req.body;
+
     if (!['contrat', 'edl', 'both'].includes(mode)) {
       return res.status(400).json({ message: 'Mode de contrat invalide.' });
     }
@@ -751,21 +761,32 @@ async function createContracts(req, res, next) {
       return res.status(403).json({ message: 'Vous ne pouvez pas créer ce contrat.' });
     }
 
-    const type_bail = ['individuel', 'collectif'].includes(annonce.type_bail) ? annonce.type_bail : 'collectif';
-    const clause_solidarite = ['avec', 'sans'].includes(annonce.clause_solidarite) ? annonce.clause_solidarite : 'sans';
+    // 1. Priorité aux valeurs envoyées par le Wizard Modal
+    const rawBail = bailType || reqTypeBail || annonce.type_bail;
+    const type_bail = ['individuel', 'collectif'].includes(rawBail) ? rawBail : 'collectif';
 
+    const rawSolidarite = solidarite || reqSolidarite || annonce.clause_solidarite;
+    const clause_solidarite = ['avec', 'sans'].includes(rawSolidarite) ? rawSolidarite : 'sans';
+
+    // 2. Mise à jour de l'annonce
+    await query(
+      'UPDATE annonces SET type_bail = ?, clause_solidarite = ? WHERE id_annonce = ?',
+      [type_bail, clause_solidarite, annonceId]
+    ).catch(() => {});
+
+    // 3. Récupération des colocataires acceptés
     const accepted = await query(
       `SELECT c.id_candidature, c.id_utilisateur, u.nom, u.prenom, u.email
        FROM candidatures c
        LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
-       WHERE c.id_annonce = ? AND c.statut = ?
+       WHERE c.id_annonce = ? AND c.statut IN ('acceptee', 'signature', 'convention')
        ORDER BY c.date_creation ASC`,
-      [annonceId, normalizeStatus('acceptee')]
+      [annonceId]
     );
 
-    const requiredCount = Number(annonce.total_colocataires) || 3;
-    if (accepted.length < requiredCount) {
-      return res.status(400).json({ message: `Au moins ${requiredCount} candidats acceptés sont requis.` });
+    const requiredCount = Number(annonce.total_colocataires) || 1;
+    if (accepted.length < requiredCount && accepted.length === 0) {
+      return res.status(400).json({ message: `Au moins un candidat accepté est requis.` });
     }
 
     const ownerRows = await query(
@@ -799,12 +820,15 @@ async function createContracts(req, res, next) {
       });
     }
 
+    // 4. Calcul tarifaire avec repli automatique (jamais 0)
     const sumOffers = async (likePrefix) => {
       const r = await query("SELECT COALESCE(SUM(prix), 0) AS total FROM services_ckoo WHERE cle_service LIKE ? AND est_actif = 1", [likePrefix]);
       return Number(r[0]?.total || 0);
     };
-    const contratMontant = await sumOffers('contrat%');
-    const edlMontant = await sumOffers('edl%');
+    const contratDb = await sumOffers('contrat%');
+    const edlDb = await sumOffers('edl%');
+    const contratMontant = contratDb > 0 ? contratDb : 27000;
+    const edlMontant = edlDb > 0 ? edlDb : 10000;
     const priceFor = (type) => (type === 'edl' ? edlMontant : contratMontant);
 
     const levels = mode === 'both' ? ['contrat', 'edl'] : [mode];
@@ -965,19 +989,18 @@ async function submitContractPayment(req, res, next) {
   }
 }
 
-// ==========================================================================
-// NOUVELLE MÉTHODE : ENREGISTREMENT DE TOUTES LES ÉTAPES DU CONTRACT WIZARD
-// ==========================================================================
 async function saveContractWizardStep(req, res, next) {
   try {
     const annonceId = Number(req.params.id);
     const {
-      step,              // 'offer' | 'bail' | 'contenu' | 'paiement' | 'done'
-      contractMode,      // 'contrat' | 'edl' | 'both'
-      bailType,          // 'individuel' | 'collectif'
-      solidarite,        // 'avec' | 'sans'
-      moyenPaiement,     // 'Orange Money' | 'MVOLA'
-      payRef,            // Référence de transaction Mobile Money
+      step,
+      contractMode,
+      bailType,
+      type_bail: reqTypeBail,
+      solidarite,
+      clause_solidarite: reqSolidarite,
+      moyenPaiement,
+      payRef,
     } = req.body;
 
     if (!Number.isInteger(annonceId) || annonceId <= 0) {
@@ -995,17 +1018,19 @@ async function saveContractWizardStep(req, res, next) {
     const annonce = annonceRows[0];
     const currentUserId = Number(req.user?.id ?? req.user?.id_utilisateur ?? req.user?.userId ?? req.user?.sub);
 
-    // 1. Étape 'bail' : Mise à jour du type de bail et clause de solidarité
-    if (bailType || solidarite) {
+    const effectiveBail = bailType || reqTypeBail;
+    const effectiveSolidarite = solidarite || reqSolidarite;
+
+    if (effectiveBail || effectiveSolidarite) {
       const updates = [];
       const params = [];
-      if (['individuel', 'collectif'].includes(bailType)) {
+      if (['individuel', 'collectif'].includes(effectiveBail)) {
         updates.push('type_bail = ?');
-        params.push(bailType);
+        params.push(effectiveBail);
       }
-      if (['avec', 'sans'].includes(solidarite)) {
+      if (['avec', 'sans'].includes(effectiveSolidarite)) {
         updates.push('clause_solidarite = ?');
-        params.push(solidarite);
+        params.push(effectiveSolidarite);
       }
       if (updates.length > 0) {
         params.push(annonceId);
@@ -1013,7 +1038,6 @@ async function saveContractWizardStep(req, res, next) {
       }
     }
 
-    // 2. Récupération des colocataires retenus
     const acceptedCandidates = await query(
       `SELECT c.id_candidature, c.id_utilisateur, u.nom, u.prenom, u.email, u.telephone
        FROM candidatures c
@@ -1023,7 +1047,6 @@ async function saveContractWizardStep(req, res, next) {
       [annonceId]
     );
 
-    // 3. Étapes 'contenu', 'paiement', 'done' : Création / mise à jour des contrats
     const createdContracts = [];
     const mode = contractMode || 'contrat';
     const modesToCreate = mode === 'both' ? ['contrat', 'edl'] : [mode];
@@ -1038,6 +1061,9 @@ async function saveContractWizardStep(req, res, next) {
 
     const contratTotal = (await sumOffers('contrat%')) || 27000;
     const edlTotal = (await sumOffers('edl%')) || 10000;
+
+    const finalBail = effectiveBail || annonce.type_bail || 'collectif';
+    const finalSolidarite = effectiveSolidarite || annonce.clause_solidarite || 'sans';
 
     for (const type of modesToCreate) {
       const montant = type === 'edl' ? edlTotal : contratTotal;
@@ -1055,8 +1081,8 @@ async function saveContractWizardStep(req, res, next) {
            SET type_bail = ?, clause_solidarite = ?, montant_total = ?
            WHERE id_contrat = ?`,
           [
-            type === 'contrat' ? (bailType || annonce.type_bail || 'collectif') : null,
-            type === 'contrat' ? (solidarite || annonce.clause_solidarite || 'sans') : null,
+            type === 'contrat' ? finalBail : null,
+            type === 'contrat' ? finalSolidarite : null,
             montant,
             id_contrat,
           ]
@@ -1070,15 +1096,14 @@ async function saveContractWizardStep(req, res, next) {
             reference,
             annonceId,
             type,
-            type === 'contrat' ? (bailType || annonce.type_bail || 'collectif') : null,
-            type === 'contrat' ? (solidarite || annonce.clause_solidarite || 'sans') : null,
+            type === 'contrat' ? finalBail : null,
+            type === 'contrat' ? finalSolidarite : null,
             type === 'edl' ? 'a-planifier' : 'a-emettre',
             montant,
           ]
         );
       }
 
-      // Reconstitution propre des parties du contrat
       await query('DELETE FROM parties_contrats WHERE id_contrat = ?', [id_contrat]);
 
       const owner = (await query('SELECT id_utilisateur, nom, prenom, email, telephone FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [annonce.id_utilisateur]))[0];
@@ -1102,7 +1127,6 @@ async function saveContractWizardStep(req, res, next) {
       createdContracts.push(freshContrat);
     }
 
-    // 4. Étape 'paiement' : Enregistrement de la référence Mobile Money
     let paymentInfo = null;
     if (payRef && createdContracts.length > 0) {
       const primaryContract = createdContracts[0];
@@ -1174,24 +1198,14 @@ async function saveContractWizardStep(req, res, next) {
 async function checkUserApplied(req, res, next) {
   try {
     const { annonceId, userId } = req.query;
-    
     if (!annonceId || !userId) {
-      return res.status(400).json({ 
-        message: 'Les paramètres annonceId et userId sont requis.' 
-      });
+      return res.status(400).json({ message: 'Les paramètres annonceId et userId sont requis.' });
     }
-
     const rows = await query(
-      `SELECT COUNT(*) as count 
-       FROM candidatures c
-       WHERE c.id_annonce = ? AND c.id_utilisateur = ?`,
+      `SELECT COUNT(*) as count FROM candidatures c WHERE c.id_annonce = ? AND c.id_utilisateur = ?`,
       [annonceId, userId]
     );
-
-    res.json({ 
-      hasApplied: rows[0].count > 0,
-      count: rows[0].count
-    });
+    res.json({ hasApplied: rows[0].count > 0, count: rows[0].count });
   } catch (err) {
     next(err);
   }
@@ -1200,10 +1214,8 @@ async function checkUserApplied(req, res, next) {
 async function listByAnnonce(req, res, next) {
   try {
     const { id } = req.params;
-    
     const rows = await query(
-      `
-      SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
+      `SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
              u.id_utilisateur as utilisateur_id, u.nom, u.prenom, u.email, u.telephone, u.profession, u.age, u.bio,
              u.date_naissance, u.profile_picture, v_act.nom_ville AS ville_actuelle, v_orig.nom_ville AS ville_origine,
              a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer
@@ -1214,8 +1226,7 @@ async function listByAnnonce(req, res, next) {
       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
       WHERE c.id_annonce = ?
-      ORDER BY c.date_creation DESC
-      `,
+      ORDER BY c.date_creation DESC`,
       [id]
     );
 
@@ -1223,9 +1234,7 @@ async function listByAnnonce(req, res, next) {
     let membresRows = [];
     if (ids.length) {
       membresRows = await query(
-        `SELECT * FROM candidature_membres 
-         WHERE id_candidature IN (${ids.map(() => '?').join(',')}) 
-         ORDER BY id`,
+        `SELECT * FROM candidature_membres WHERE id_candidature IN (${ids.map(() => '?').join(',')}) ORDER BY id`,
         ids
       );
     }
