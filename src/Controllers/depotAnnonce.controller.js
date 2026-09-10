@@ -63,6 +63,7 @@ async function create(req, res, next) {
         type_annonce,
         logement,
         nombre_pieces,
+        total_colocataires,
         description,
         email, // email de contact saisi dans le formulaire de depot
         chambres = [],
@@ -92,6 +93,7 @@ async function create(req, res, next) {
           ['Type d\'annonce', type_annonce],
           ['Logement', logement],
           ['Nombre de pieces', nombre_pieces],
+          ['Nombre de colocataires', total_colocataires],
           ['Chambres', resumeChambres],
         ],
         action: { label: "Ouvrir la file de validation", path: `/admin/annonces/${annonceId || ''}` },
