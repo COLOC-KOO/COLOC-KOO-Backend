@@ -135,7 +135,12 @@ async function createDepotAnnonce(userId, payload) {
 
   const nombrePiecesRaw = payload.nombre_pieces === '10+' ? '10' : String(payload.nombre_pieces || '').trim();
   const nombrePiecesStr = nombrePiecesRaw || '2';
-  const nombrePiecesNum = payload.nombre_pieces === '10+' ? 10 : toNullableNumber(payload.nombre_pieces);
+  // `nombre_pieces` (pieces du logement) et `total_colocataires` (nombre de
+  // personnes) sont deux notions distinctes envoyees separement par le
+  // formulaire : ne pas les reconflater comme c'etait le cas auparavant.
+  const totalColocatairesNum = payload.total_colocataires === '6+'
+    ? 6
+    : toNullableNumber(payload.total_colocataires);
 
   const email = payload.email || 'non-renseigne@sarintany-coloc.mg';
 
@@ -163,7 +168,7 @@ async function createDepotAnnonce(userId, payload) {
       modeAnnonce,
       annonceTypeAnnonce,
       mapLogementToAnnonceType(logement),
-      nombrePiecesNum,
+      totalColocatairesNum,
       surface,
       payload.adresse || null,
       payload.quartier || null,
