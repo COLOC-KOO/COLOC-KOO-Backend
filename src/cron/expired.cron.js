@@ -148,7 +148,7 @@ function demarrerCronExpired() {
   cron.schedule('35 08 * * *', () => {
     traiterAnnoncesExpirees();
   });
-  console.log('[cron:expired] tache planifiee demarree');
+  console.log('[cron:expired] tache planifiee demarree a 08h 35min');
 }
 
 module.exports = { demarrerCronExpired, traiterAnnoncesExpirees };

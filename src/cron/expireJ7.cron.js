@@ -136,7 +136,7 @@ function demarrerCronExpireJ7() {
   cron.schedule('50 08 * * *', () => {
     verifierAnnoncesExpirantJ7();
   });
-  console.log('[cron:expire_j7] tache planifiee demarree (tous les jours a 8h00)');
+  console.log('[cron:expire_j7] tache planifiee demarree (tous les jours a 8h50)');
 }
 
 module.exports = { demarrerCronExpireJ7, verifierAnnoncesExpirantJ7 };
