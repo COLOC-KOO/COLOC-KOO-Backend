@@ -80,9 +80,51 @@ async function ensurePartenaireRequestSchema() {
   }
 }
 
+async function ensureAnnonceEquipmentSchema() {
+  const dbPool = await initPool();
+  const tables = [
+    {
+      name: 'annonces',
+      columns: [
+        { name: 'internet', definition: "ENUM('ADSL','Fibre','Box','Aucune') NULL" },
+        { name: 'parking_voitures', definition: 'INT NOT NULL DEFAULT 0' },
+        { name: 'parking_motos', definition: 'INT NOT NULL DEFAULT 0' },
+        { name: 'parking_couvert', definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
+      ],
+    },
+    {
+      name: 'depot_annonce',
+      columns: [
+        { name: 'internet', definition: "ENUM('ADSL','Fibre','Box','Aucune') NULL" },
+        { name: 'parking_voitures', definition: 'INT NOT NULL DEFAULT 0' },
+        { name: 'parking_motos', definition: 'INT NOT NULL DEFAULT 0' },
+        { name: 'parking_couvert', definition: 'TINYINT(1) NOT NULL DEFAULT 0' },
+      ],
+    },
+  ];
+
+  for (const table of tables) {
+    const [existingTable] = await dbPool.query('SHOW TABLES LIKE ?', [table.name]);
+    if (existingTable.length === 0) continue;
+
+    for (const column of table.columns) {
+      const [existingColumn] = await dbPool.query(
+        `SHOW COLUMNS FROM \`${table.name}\` LIKE ?`,
+        [column.name]
+      );
+      if (existingColumn.length === 0) {
+        await dbPool.query(
+          `ALTER TABLE \`${table.name}\` ADD COLUMN \`${column.name}\` ${column.definition}`
+        );
+      }
+    }
+  }
+}
+
 async function ensureBusinessSchema() {
   try {
     const dbPool = await initPool();
+    await ensureAnnonceEquipmentSchema();
     await dbPool.query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'");
     await dbPool.query(`
       DELETE c1 FROM candidatures c1
