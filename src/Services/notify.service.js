@@ -1,6 +1,7 @@
 // 
 const { query } = require('./db.service');
 const mail = require('./mail.service');
+const { sendToUser } = require('./realtime.service');   // ⬅️ AJOUT
 
 // type_notification autorises par la table (enum). On borne pour eviter une
 // erreur SQL si un appelant passe une valeur libre.
@@ -9,16 +10,37 @@ function typeValide(type) {
   return TYPES_VALIDES.includes(type) ? type : 'systeme';
 }
 
-// Insere une ligne dans `notifications` (best-effort).
+// Insere une ligne dans `notifications` (best-effort) + push WS temps réel.
 async function insertInApp(userId, type, titre, texte, lien) {
   console.log('[notify] insertInApp() -> userId:', userId, '| type:', typeValide(type), '| titre:', titre);
-  await query(
-    `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-     VALUES (?, ?, ?, ?, ?)`,
-    [userId, typeValide(type), titre, texte, lien]
-  ).catch((err) => {
+  try {
+    const result = await query(
+      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
+       VALUES (?, ?, ?, ?, ?)`,
+      [userId, typeValide(type), titre, texte, lien]
+    );
+
+    // 🎯 Récupère l'id de la ligne insérée (mysql2 → OkPacket)
+    const insertId = result?.insertId ?? result?.id ?? null;
+
+    // 🔔 Push temps réel vers les onglets ouverts de cet utilisateur.
+    //    Best-effort : si personne n'écoute, ça ne fait rien.
+    sendToUser(userId, {
+      type: 'notification',
+      notification: {
+        id_notification: insertId,
+        id_utilisateur: Number(userId),
+        type_notification: typeValide(type),
+        titre,
+        texte,
+        lien,
+        est_lue: 0,
+        date_creation: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
     console.error('[notify] insertInApp() ECHEC pour userId:', userId, '-', err.message);
-  });
+  }
 }
 
 // Construit le HTML final d'un email de notification (corps + bouton),
@@ -62,7 +84,7 @@ async function getStaffRecipients(roles = STAFF_ROLES) {
     list
   );
   console.log('[notify] getStaffRecipients() -> resultat :', rows.length, 'utilisateur(s) trouve(s)');
-  rows.forEach((r) => console.log('[notify]   -', r.email, '(id:', r.id_utilisateur + ')'));
+  rows.forEach((r) => console.log('[notify]   -', r.email, '(id:', r.id_utilisateur + ')')); 
   return rows;
 }
 
@@ -127,7 +149,6 @@ async function notifyUser(userId, { titre, texte, lien = null, type = 'systeme',
     console.error('[notify] notifyUser() ECHEC GENERAL :', err.message);
   }
 }
-
 
 // Envoie UNIQUEMENT un email a un utilisateur, sans creer d'entree in-app.
 // A utiliser quand l'utilisateur a explicitement demande "email seul"
