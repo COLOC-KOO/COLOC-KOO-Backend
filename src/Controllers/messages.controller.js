@@ -156,8 +156,7 @@ async function send(req, res, next) {
       [req.user.id, id_destinataire, id_annonce || null, sujet || null, contenu, message_parent || null]
     );
 
-    // On ne crée la notification "in-app" / push que si le destinataire n'a pas
-    // désactivé le push pour l'événement 'new_msg' dans ses préférences.
+    // Préférence "push/notification" → contrôle uniquement la notification in-app
     const veutPush = await veutPushPourEvenement(id_destinataire, 'new_msg');
     if (veutPush) {
       await query(
@@ -182,15 +181,11 @@ async function send(req, res, next) {
       [id]
     );
 
-    // Le message temps réel (socket) sert aussi de "push" pour l'utilisateur connecté :
-    // on l'envoie seulement si le destinataire accepte le push pour cet événement.
-    if (veutPush) {
-      req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
-    }
+  
+    req.app.get('realtime')?.sendDirectMessage?.(req.user.id, id_destinataire, message);
 
     res.status(201).json(message || { id_message: id });
 
-    // Envoi de l'email en arrière-plan, sans bloquer la réponse HTTP
     envoyerEmailNouveauMessage(message).catch((err) =>
       console.error('[messages] erreur envoi email nouveau message:', err)
     );
