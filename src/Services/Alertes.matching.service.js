@@ -10,7 +10,8 @@ function normaliser(str) {
     .trim()
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/s\b/g, ''); // retire un 's' final (pluriel) pour comparer "Fille"/"Filles"
 }
 
 // Le frontend (TabAlertes.tsx) enregistre des libellés français lisibles
@@ -157,9 +158,15 @@ async function matchAlertesPourAnnonce(idAnnonce) {
     for (const regleBrute of reglesAlerte) {
       const colonne = REGLE_LABEL_VERS_COLONNE[normaliser(regleBrute)];
       if (colonne) {
-        console.log(`[MATCH DEBUG] Règle "${regleBrute}" -> colonne "${colonne}" -> valeur annonce=${reglesAnnonceMap[colonne]}`);
-        if (reglesAnnonceMap[colonne] !== true) {
-          console.log('[MATCH DEBUG] REJET alerte', alerte.id, `-> règle "${regleBrute}" (colonne ${colonne}) non satisfaite`);
+        const colonneOk = reglesAnnonceMap[colonne] === true;
+        // Filet de secours : le dépôt d'annonce ne met pas toujours à jour
+        // la colonne booléenne dédiée (ex: women_only), l'info reste parfois
+        // uniquement en texte libre dans regles_annonces ("Filles uniquement").
+        // On accepte donc aussi une correspondance texte.
+        const texteOk = rulesTexteAnnonceLower.includes(normaliser(regleBrute));
+        console.log(`[MATCH DEBUG] Règle "${regleBrute}" -> colonne "${colonne}"=${reglesAnnonceMap[colonne]} OU texte libre=${texteOk}`);
+        if (!colonneOk && !texteOk) {
+          console.log('[MATCH DEBUG] REJET alerte', alerte.id, `-> règle "${regleBrute}" non satisfaite (ni colonne ni texte)`);
           return false;
         }
       } else {
