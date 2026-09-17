@@ -13,6 +13,7 @@ async function listGroups(req, res, next) {
               gm.role,
               last_msg.date_envoi AS date_dernier_message,
               last_msg.contenu AS dernier_message,
+              last_msg.id_expediteur AS dernier_expediteur_id,
               (SELECT COUNT(*) FROM groupe_messages total_msg WHERE total_msg.id_groupe = g.id_groupe) AS total_messages,
               (SELECT COUNT(*)
                  FROM groupe_messages unread_msg
@@ -156,7 +157,7 @@ async function getMessages(req, res, next) {
        FROM groupe_messages gm
        LEFT JOIN utilisateurs u ON u.id_utilisateur = gm.id_expediteur
        WHERE gm.id_groupe = ?
-       ORDER BY gm.date_envoi ASC`,
+       ORDER BY gm.date_envoi ASC, gm.id_message ASC`,
       [groupId]
     );
 

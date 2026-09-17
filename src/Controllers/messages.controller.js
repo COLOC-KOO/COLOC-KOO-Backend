@@ -133,7 +133,7 @@ async function getThread(req, res, next) {
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
        WHERE (m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?)
-       ORDER BY m.date_envoi ASC`,
+       ORDER BY m.date_envoi ASC, m.id_message ASC`,
       [req.user.id, otherId, otherId, req.user.id]
     );
     await query('UPDATE messages SET est_lu = 1 WHERE id_expediteur = ? AND id_destinataire = ?', [otherId, req.user.id]);
