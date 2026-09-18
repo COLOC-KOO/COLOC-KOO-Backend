@@ -1,4 +1,5 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const { insertInApp } = require('../Services/notify.service');
 
 async function listGroups(req, res, next) {
   try {
@@ -11,6 +12,21 @@ async function listGroups(req, res, next) {
               g.est_cloture,
               g.date_creation,
               gm.role,
+              /* Infos de l'annonce liée, pour afficher le groupe comme un fil autonome */
+              a.titre AS annonce_titre,
+              a.quartier AS annonce_quartier,
+              v.nom_ville AS annonce_ville,
+              prop.nom AS proprietaire_nom,
+              prop.prenom AS proprietaire_prenom,
+              (SELECT MIN(ch.prix_loyer) FROM chambres ch WHERE ch.id_annonce = a.id_annonce) AS annonce_prix,
+              /* Photo telle que choisie par l'utilisateur : principale d'abord,
+                 puis l'ordre d'affichage. MIN(url) renvoyait une photo au hasard
+                 (la plus petite alphabétiquement). */
+              (SELECT pa.url
+                 FROM photos_annonces pa
+                WHERE pa.id_annonce = a.id_annonce
+                ORDER BY pa.est_principale DESC, pa.ordre ASC, pa.id_photo ASC
+                LIMIT 1) AS annonce_photo,
               last_msg.date_envoi AS date_dernier_message,
               last_msg.contenu AS dernier_message,
               last_msg.id_expediteur AS dernier_expediteur_id,
@@ -25,6 +41,9 @@ async function listGroups(req, res, next) {
               ) AS non_lus
        FROM groupes_discussion g
        JOIN groupe_membres gm ON gm.id_groupe = g.id_groupe AND gm.id_utilisateur = ?
+       LEFT JOIN annonces a ON a.id_annonce = g.id_annonce
+       LEFT JOIN villes v ON v.id_ville = a.id_ville
+       LEFT JOIN utilisateurs prop ON prop.id_utilisateur = a.id_utilisateur
        LEFT JOIN groupe_messages last_msg
          ON last_msg.id_message = (
            SELECT latest.id_message
@@ -40,6 +59,12 @@ async function listGroups(req, res, next) {
       ...row,
       total_messages: Number(row.total_messages || 0),
       non_lus: Number(row.non_lus || 0),
+      annonce_titre: row.annonce_titre || null,
+      annonce_quartier: row.annonce_quartier || null,
+      annonce_ville: row.annonce_ville || null,
+      annonce_photo: row.annonce_photo || null,
+      proprietaire_nom:
+        [row.proprietaire_prenom, row.proprietaire_nom].filter(Boolean).join(' ').trim() || null,
       membres: [],
     })));
   } catch (err) {
@@ -114,11 +139,13 @@ async function createGroup(req, res, next) {
         'INSERT IGNORE INTO groupe_membres (id_groupe, id_utilisateur, role) VALUES (?, ?, ?)',
         [groupId, id, 'membre']
       );
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [id, 'Ajout dans un groupe', `Vous avez ete ajoute au groupe "${nom}".`, `/compte?tab=messages&group=${groupId}`]
-      ).catch(() => {});
+      await insertInApp(
+        id,
+        'message',
+        'Ajout dans un groupe',
+        `Vous avez ete ajoute au groupe "${nom}".`,
+        `/compte?tab=messages&group=${groupId}`
+      );
       realtime?.sendToUser?.(id, {
         type: 'group_created',
         groupId,
@@ -209,11 +236,13 @@ async function sendMessage(req, res, next) {
     );
     const [group] = await query('SELECT nom FROM groupes_discussion WHERE id_groupe = ? LIMIT 1', [groupId]);
     for (const recipient of recipients) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [recipient.id_utilisateur, group?.nom || 'Nouveau message de groupe', contenu.slice(0, 255), `/compte?tab=messages&group=${groupId}`]
-      ).catch(() => {});
+      await insertInApp(
+        recipient.id_utilisateur,
+        'message',
+        group?.nom || 'Nouveau message de groupe',
+        contenu.slice(0, 255),
+        `/compte?tab=messages&group=${groupId}`
+      );
     }
 
     const realtime = req.app.get('realtime');

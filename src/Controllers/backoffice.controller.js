@@ -2,6 +2,7 @@
 const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
 const { ensureBoosterSchema, normalizeBoosterPayload } = require('../Services/booster.service');
+const { insertInApp } = require('../Services/notify.service');
 
 const WARNING_REASONS = [
   'Renseignements manquants',
@@ -480,11 +481,7 @@ async function sendWarning(req, res, next) {
        VALUES (?, ?, ?, ?, 0)`,
       [actorId(req), id_utilisateur, subject, text]
     );
-    await query(
-      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-       VALUES (?, 'message', ?, ?, ?)`,
-      [id_utilisateur, subject, text, `/admin/messages?message=${id}`]
-    ).catch(() => {});
+    await insertInApp(id_utilisateur, 'message', subject, text, `/admin/messages?message=${id}`);
     await logAction(req, 'Message', 'utilisateur', id_utilisateur, { raison: subject, id_message: id });
     res.status(201).json({ id_message: id, redirect: '/admin/messages' });
   } catch (err) {
@@ -1102,11 +1099,13 @@ async function contratAction(req, res, next) {
     if (req.params.action === 'envoyer') {
       const parties = await query('SELECT id_utilisateur FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL', [req.params.id]);
       for (const partie of parties) {
-        await query(
-          `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-           VALUES (?, 'systeme', 'Contrat disponible', 'Un contrat est disponible pour signature.', ?)`,
-          [partie.id_utilisateur, `/contrats/${req.params.id}`]
-        ).catch(() => {});
+        await insertInApp(
+          partie.id_utilisateur,
+          'systeme',
+          'Contrat disponible',
+          'Un contrat est disponible pour signature.',
+          `/contrats/${req.params.id}`
+        );
       }
     }
     await logAction(req, req.params.action === 'signer' ? 'Signature' : 'Message', 'contrat', req.params.id, { statut });

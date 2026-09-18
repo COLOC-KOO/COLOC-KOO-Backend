@@ -1,4 +1,5 @@
 const { insertAndGetId, query } = require('./db.service');
+const { insertInApp } = require('./notify.service');
 
 /**
  * Crée (ou met à jour) le groupe privé lié à une annonce lorsque le
@@ -81,10 +82,12 @@ async function notifyAcceptedColocGroup({ group, realtime }) {
   const message = await insertAutomaticMessage(group.id_groupe, content);
 
   for (const userId of members) {
-    await query(
-      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-       VALUES (?, 'systeme', ?, ?, ?)`,
-      [userId, 'Toutes nos félicitations !', 'Votre candidature est validée.', `/compte?tab=messages&group=${group.id_groupe}`]
+    await insertInApp(
+      userId,
+      'systeme',
+      'Toutes nos félicitations !',
+      'Votre candidature est validée.',
+      `/compte?tab=messages&group=${group.id_groupe}`
     );
     realtime?.sendToUser?.(userId, {
       type: 'colocation_validated',
@@ -115,10 +118,12 @@ async function closeRejectedCandidateGroups({ annonceId, candidateId, realtime }
     const members = await getGroupMemberIds(group.id_groupe);
 
     for (const userId of members) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'systeme', ?, ?, ?)`,
-        [userId, 'Annonce non disponible', content, `/compte?tab=messages&group=${group.id_groupe}`]
+      await insertInApp(
+        userId,
+        'systeme',
+        'Annonce non disponible',
+        content,
+        `/compte?tab=messages&group=${group.id_groupe}`
       );
       realtime?.sendToUser?.(userId, { type: 'group_message', groupId: group.id_groupe, message });
       realtime?.sendToUser?.(userId, { type: 'group_closed', groupId: group.id_groupe, reason: 'annonce_non_disponible' });

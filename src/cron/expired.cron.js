@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { query } = require('../Services/db.service');
 const { veutEmailPourEvenement, veutPushPourEvenement } = require('../Controllers/preferences.helper');
 const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
+const { insertInApp } = require('../Services/notify.service');
 
 // Vérification et traitement des annonces expirées
 async function traiterAnnoncesExpirees() {
@@ -84,15 +85,12 @@ async function envoyerNotificationPushExpiration(annonce) {
   }
 
   try {
-    await query(
-      `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-       VALUES (?, 'systeme', ?, ?, ?)`,
-      [
-        annonce.id_utilisateur,
-        'Votre annonce a expiré',
-        `Votre annonce "${annonce.titre}" a expiré et n'est plus visible. Renouvelez-la pour continuer à recevoir des demandes.`,
-        `/annonces/${annonce.id_annonce}/renouveler`,
-      ]
+    await insertInApp(
+      annonce.id_utilisateur,
+      'systeme',
+      'Votre annonce a expiré',
+      `Votre annonce "${annonce.titre}" a expiré et n'est plus visible. Renouvelez-la pour continuer à recevoir des demandes.`,
+      `/annonces/${annonce.id_annonce}/renouveler`
     );
     console.log('[cron:expired] notification push creee pour utilisateur', annonce.id_utilisateur, ', annonce', annonce.id_annonce);
   } catch (err) {

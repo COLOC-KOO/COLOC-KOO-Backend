@@ -1407,7 +1407,7 @@ CREATE TABLE groupes_discussion (
   id_annonce INT NULL,              -- rattacher le groupe à une annonce/coloc si pertinent
   date_creation DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (id_createur) REFERENCES utilisateurs(id_utilisateur),
-  FOREIGN KEY (id_annonce) REFERENCES annonces(id_annonce)
+  CONSTRAINT fk_groupes_discussion_annonce FOREIGN KEY (id_annonce) REFERENCES annonces(id_annonce) ON DELETE CASCADE
 );
 
 CREATE TABLE groupe_membres (
