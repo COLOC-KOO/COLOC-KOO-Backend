@@ -121,10 +121,36 @@ async function ensureAnnonceEquipmentSchema() {
   }
 }
 
+// groupes_discussion.id_annonce était en ON DELETE RESTRICT : supprimer une
+// annonce ayant un groupe de discussion échouait. On passe la FK en CASCADE.
+async function ensureAnnonceDeleteCascade() {
+  const dbPool = await initPool();
+  const [constraints] = await dbPool.query(
+    `SELECT CONSTRAINT_NAME, DELETE_RULE
+     FROM information_schema.REFERENTIAL_CONSTRAINTS
+     WHERE CONSTRAINT_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'groupes_discussion'
+       AND REFERENCED_TABLE_NAME = 'annonces'`
+  );
+  if (constraints.length === 0 || constraints.some((c) => c.DELETE_RULE === 'CASCADE')) return;
+
+  for (const constraint of constraints) {
+    await dbPool.query(`ALTER TABLE groupes_discussion DROP FOREIGN KEY \`${constraint.CONSTRAINT_NAME}\``);
+  }
+  await dbPool.query(`
+    ALTER TABLE groupes_discussion
+      ADD CONSTRAINT fk_groupes_discussion_annonce
+      FOREIGN KEY (id_annonce) REFERENCES annonces (id_annonce) ON DELETE CASCADE
+  `);
+}
+
 async function ensureBusinessSchema() {
   try {
     const dbPool = await initPool();
     await ensureAnnonceEquipmentSchema();
+    await ensureAnnonceDeleteCascade().catch((error) => {
+      console.warn('Impossible de passer groupes_discussion.id_annonce en ON DELETE CASCADE:', error.message);
+    });
     await dbPool.query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'");
     await dbPool.query(`
       DELETE c1 FROM candidatures c1

@@ -1,4 +1,5 @@
-﻿const { query, insertAndGetId } = require('../Services/db.service');
+﻿const { query, insertAndGetId, withTransaction } = require('../Services/db.service');
+const { normalizeRole } = require('../Middleware/auth.middleware');
 const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 const notify = require('../Services/notify.service');
 const { ensureBoosterSchema } = require('../Services/booster.service');
@@ -587,21 +588,86 @@ async function updateStatus(req, res, next) {
   }
 }
 
-// Suppression complète d'une annonce et de ses liaisons
+const STAFF_ROLES = ['admin', 'super_admin', 'moderator'];
+
+// Nettoyage d'une annonce, enfants avant parents : ne dépend d'aucune règle
+// ON DELETE de la base (certaines FK sont en RESTRICT selon l'environnement).
+// Chaque requête prend l'id de l'annonce comme unique paramètre.
+const ANNONCE_DELETE_STEPS = [
+  // Groupes de discussion rattachés à l'annonce
+  'DELETE FROM groupe_lectures WHERE id_groupe IN (SELECT id_groupe FROM groupes_discussion WHERE id_annonce = ?)',
+  'DELETE FROM groupe_membres WHERE id_groupe IN (SELECT id_groupe FROM groupes_discussion WHERE id_annonce = ?)',
+  'DELETE FROM groupe_messages WHERE id_groupe IN (SELECT id_groupe FROM groupes_discussion WHERE id_annonce = ?)',
+  'DELETE FROM groupes_discussion WHERE id_annonce = ?',
+  // Contrats : les paiements sont conservés (historique comptable) mais détachés
+  'UPDATE paiements SET id_contrat = NULL WHERE id_contrat IN (SELECT id_contrat FROM contrats WHERE id_annonce = ?)',
+  'DELETE FROM parties_contrats WHERE id_contrat IN (SELECT id_contrat FROM contrats WHERE id_annonce = ?)',
+  'DELETE FROM contrats WHERE id_annonce = ?',
+  'UPDATE paiements SET id_annonce = NULL WHERE id_annonce = ?',
+  // Messages privés : la conversation entre les deux utilisateurs reste, sans lien vers l'annonce
+  'UPDATE messages SET id_annonce = NULL WHERE id_annonce = ?',
+  // Candidatures et équipes
+  'DELETE FROM candidature_membres WHERE id_candidature IN (SELECT id_candidature FROM candidatures WHERE id_annonce = ?)',
+  'DELETE FROM candidatures WHERE id_annonce = ?',
+  'DELETE FROM membres_equipes WHERE id_equipe IN (SELECT id_equipe FROM equipes WHERE id_annonce = ?)',
+  'DELETE FROM equipes WHERE id_annonce = ?',
+  // Demandes C'KOO
+  'DELETE FROM lignes_demandes_ckoo WHERE id_demande IN (SELECT id_demande FROM demandes_ckoo WHERE id_annonce = ?)',
+  'DELETE FROM demandes_ckoo WHERE id_annonce = ?',
+  // Dépôt d'annonce d'origine
+  'DELETE FROM depot_annonce_chambres WHERE id_depot_annonce IN (SELECT id_depot_annonce FROM depot_annonce WHERE id_annonce = ?)',
+  'DELETE FROM depot_annonce WHERE id_annonce = ?',
+  // Données propres à l'annonce
+  'DELETE FROM favoris WHERE id_annonce = ?',
+  'DELETE FROM signalements WHERE id_annonce = ?',
+  'DELETE FROM photos_annonces WHERE id_annonce = ?',
+  'DELETE FROM equipements_annonces WHERE id_annonce = ?',
+  'DELETE FROM regles_annonces WHERE id_annonce = ?',
+  'DELETE FROM chambres WHERE id_annonce = ?',
+  // Notifications d'alerte pointant vers l'annonce (lien mort une fois supprimée)
+  "DELETE FROM notifications WHERE lien = CONCAT('/annonces/', ?)",
+  'DELETE FROM annonces WHERE id_annonce = ?',
+];
+
+// Suppression définitive d'une annonce et de toutes ses liaisons (propriétaire ou staff)
 async function remove(req, res, next) {
   try {
-    await query('DELETE FROM candidature_membres WHERE id_candidature IN (SELECT id_candidature FROM candidatures WHERE id_annonce = ?)', [req.params.id]);
-    await query('DELETE FROM candidatures WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM favoris WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM membres_equipes WHERE id_equipe IN (SELECT id_equipe FROM equipes WHERE id_annonce = ?)', [req.params.id]);
-    await query('DELETE FROM equipes WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM demandes_ckoo WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM signalements WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM photos_annonces WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM equipements_annonces WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM regles_annonces WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM chambres WHERE id_annonce = ?', [req.params.id]);
-    await query('DELETE FROM annonces WHERE id_annonce = ?', [req.params.id]);
+    const annonceId = Number(req.params.id);
+    if (!Number.isInteger(annonceId) || annonceId <= 0) {
+      return res.status(400).json({ message: 'Identifiant d annonce invalide.' });
+    }
+
+    const [annonce] = await query('SELECT id_annonce, id_utilisateur FROM annonces WHERE id_annonce = ? LIMIT 1', [annonceId]);
+    if (!annonce) {
+      return res.status(404).json({ message: 'Annonce introuvable.' });
+    }
+
+    const isOwner = Number(annonce.id_utilisateur) === Number(req.user.id);
+    const isStaff = STAFF_ROLES.includes(normalizeRole(req.user.role || req.user.poste));
+    if (!isOwner && !isStaff) {
+      return res.status(403).json({ message: 'Vous ne pouvez supprimer que vos propres annonces.' });
+    }
+
+    // Membres des groupes supprimés, pour fermer la discussion en temps réel chez eux
+    const groupMembers = await query(
+      `SELECT gm.id_groupe, gm.id_utilisateur
+       FROM groupe_membres gm
+       JOIN groupes_discussion g ON g.id_groupe = gm.id_groupe
+       WHERE g.id_annonce = ?`,
+      [annonceId]
+    );
+
+    await withTransaction(async (tx) => {
+      for (const sql of ANNONCE_DELETE_STEPS) {
+        await tx(sql, [annonceId]);
+      }
+    });
+
+    const realtime = req.app.get('realtime');
+    for (const member of groupMembers) {
+      realtime?.sendToUser?.(member.id_utilisateur, { type: 'group_deleted', groupId: member.id_groupe });
+    }
+
     res.json({ message: 'Annonce supprimee.' });
   } catch (err) {
     next(err);

@@ -62,7 +62,13 @@ async function listThreads(req, res, next) {
          a.quartier AS annonce_quartier,
          v.nom_ville AS annonce_ville,
          MIN(ch.prix_loyer) AS annonce_prix,
-         MIN(pa.url) AS annonce_photo
+         /* Photo telle que choisie par l'utilisateur : principale d'abord, puis
+            l'ordre d'affichage. MIN(url) renvoyait une photo au hasard. */
+         (SELECT pa.url
+            FROM photos_annonces pa
+           WHERE pa.id_annonce = a.id_annonce
+           ORDER BY pa.est_principale DESC, pa.ordre ASC, pa.id_photo ASC
+           LIMIT 1) AS annonce_photo
        FROM messages m
        INNER JOIN (
          /* Sous-requête pour récupérer le dernier message exact par fil de discussion */
@@ -81,7 +87,6 @@ async function listThreads(req, res, next) {
        LEFT JOIN utilisateurs prop ON prop.id_utilisateur = a.id_utilisateur
        LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
        LEFT JOIN villes v ON v.id_ville = a.id_ville
-       LEFT JOIN photos_annonces pa ON pa.id_annonce = a.id_annonce
        WHERE m.id_expediteur = ? OR m.id_destinataire = ?
        GROUP BY m.id_message, interlocuteur_id
        ORDER BY m.date_envoi DESC`,
