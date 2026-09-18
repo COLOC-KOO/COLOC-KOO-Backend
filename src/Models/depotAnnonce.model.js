@@ -55,13 +55,25 @@ function normalizeDepotLogement(value) {
 }
 
 /* --- NORMALISATION MEUBLE --- */
-function normalizeMeublee(value) {
+/* depot_annonce_chambres.meublee et chambres.est_meuble : enum('Oui','Partiellement','Non','Rachat') */
+function normalizeMeubleePart(value) {
   if (value === true || value === 1 || value === '1') return 'Oui';
   if (value === false || value === 0 || value === '0') return 'Non';
   const v = String(value || '').trim().toLowerCase();
-  if (v === 'oui' || v === 'true' || v.includes('meubl')) return 'Oui';
   if (v === 'non' || v === 'false' || v === 'non meublé' || v === 'non meuble') return 'Non';
-  return v ? (v.charAt(0).toUpperCase() + v.slice(1)) : 'Non';
+  if (v === 'oui' || v === 'true' || v.includes('meubl')) return 'Oui';
+  if (v === 'partiellement') return 'Partiellement';
+  if (v === 'rachat') return 'Rachat';
+  return null;
+}
+
+function normalizeMeublee(value) {
+  // Le formulaire autorise plusieurs réponses ("Oui, Partiellement") alors que la
+  // colonne n'accepte qu'une valeur : on en garde une seule, valide pour l'enum,
+  // sinon MySQL renvoie "Data truncated for column 'meublee'".
+  const parts = typeof value === 'string' ? value.split(',') : [value];
+  const normalized = parts.map(normalizeMeubleePart).filter(Boolean);
+  return ['Oui', 'Partiellement', 'Rachat', 'Non'].find((option) => normalized.includes(option)) || 'Non';
 }
 
 /* --- NORMALISATION INTERNET --- */
