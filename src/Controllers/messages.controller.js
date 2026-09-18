@@ -1,5 +1,6 @@
 const { query, insertAndGetId } = require('../Services/db.service');
 const { sendEmail, wrapLayout, detailsTable, actionButton } = require('../Services/mail.service');
+const { insertInApp } = require('../Services/notify.service');
 const { veutEmailPourEvenement, veutPushPourEvenement } = require('./preferences.helper');
 
 async function envoyerEmailNouveauMessage(message) {
@@ -159,11 +160,13 @@ async function send(req, res, next) {
     // Préférence "push/notification" → contrôle uniquement la notification in-app
     const veutPush = await veutPushPourEvenement(id_destinataire, 'new_msg');
     if (veutPush) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [id_destinataire, sujet || 'Nouveau message', contenu.slice(0, 255), `/compte?tab=messages&user=${req.user.id}`]
-      ).catch(() => {});
+      await insertInApp(
+        id_destinataire,
+        'message',
+        sujet || 'Nouveau message',
+        contenu.slice(0, 255),
+        `/compte?tab=messages&user=${req.user.id}`
+      );
     } else {
       console.log('[messages] destinataire', id_destinataire, 'a desactive le push pour new_msg, notification non creee');
     }

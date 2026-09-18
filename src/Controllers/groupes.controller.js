@@ -1,4 +1,5 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const { insertInApp } = require('../Services/notify.service');
 
 async function listGroups(req, res, next) {
   try {
@@ -114,11 +115,13 @@ async function createGroup(req, res, next) {
         'INSERT IGNORE INTO groupe_membres (id_groupe, id_utilisateur, role) VALUES (?, ?, ?)',
         [groupId, id, 'membre']
       );
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [id, 'Ajout dans un groupe', `Vous avez ete ajoute au groupe "${nom}".`, `/compte?tab=messages&group=${groupId}`]
-      ).catch(() => {});
+      await insertInApp(
+        id,
+        'message',
+        'Ajout dans un groupe',
+        `Vous avez ete ajoute au groupe "${nom}".`,
+        `/compte?tab=messages&group=${groupId}`
+      );
       realtime?.sendToUser?.(id, {
         type: 'group_created',
         groupId,
@@ -209,11 +212,13 @@ async function sendMessage(req, res, next) {
     );
     const [group] = await query('SELECT nom FROM groupes_discussion WHERE id_groupe = ? LIMIT 1', [groupId]);
     for (const recipient of recipients) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [recipient.id_utilisateur, group?.nom || 'Nouveau message de groupe', contenu.slice(0, 255), `/compte?tab=messages&group=${groupId}`]
-      ).catch(() => {});
+      await insertInApp(
+        recipient.id_utilisateur,
+        'message',
+        group?.nom || 'Nouveau message de groupe',
+        contenu.slice(0, 255),
+        `/compte?tab=messages&group=${groupId}`
+      );
     }
 
     const realtime = req.app.get('realtime');

@@ -5,6 +5,7 @@ const {
   closeRejectedCandidateGroups,
 } = require('../Services/accepted-coloc-group.service');
 const { ensureContractContent } = require('./meta.controller');
+const { insertInApp } = require('../Services/notify.service');
 const mail = require('../Services/mail.service');
 
 const PROGRESS_STEPS = [
@@ -408,11 +409,7 @@ async function create(req, res, next) {
       const notifTitle = 'Nouvelle candidature sur votre annonce';
       const notifText = `Un colocataire a postulé à votre annonce « ${annonce.titre || 'votre annonce'} ».`;
       const notifLink = `/annonces/${id_annonce}`;
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'candidature', ?, ?, ?)`,
-        [annonce.id_utilisateur, notifTitle, notifText, notifLink]
-      );
+      await insertInApp(annonce.id_utilisateur, 'candidature', notifTitle, notifText, notifLink);
     } catch (notifError) {
       console.error('❌ Erreur notification propriétaire:', notifError);
     }
@@ -537,11 +534,13 @@ async function decide(req, res, next) {
          VALUES (?, ?, ?, ?, ?)`,
         [currentUserId, destinataireId, candidature.id_annonce, 'Discussion candidature', contenu]
       );
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)`,
-        [destinataireId, 'Nouvelle discussion', contenu.slice(0, 255), `/messages/${currentUserId}`]
-      ).catch(() => {});
+      await insertInApp(
+        destinataireId,
+        'message',
+        'Nouvelle discussion',
+        contenu.slice(0, 255),
+        `/messages/${currentUserId}`
+      );
       return res.json({ message: 'Discussion lancée.', conversationId });
     }
 

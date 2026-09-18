@@ -1,4 +1,5 @@
 const { insertAndGetId, query } = require('../Services/db.service');
+const { insertInApp } = require('../Services/notify.service');
 
 async function create(req, res, next) {
   try {
@@ -20,11 +21,13 @@ async function create(req, res, next) {
 
     const notificationText = `Nom: ${nom}\nEmail: ${email}\nMessage: ${message}`;
     for (const recipient of recipients) {
-      await query(
-        `INSERT INTO notifications (id_utilisateur, type_notification, titre, texte, lien)
-         VALUES (?, 'message', ?, ?, ?)` ,
-        [recipient.id_utilisateur, `Nouveau message de contact: ${sujet}`, notificationText, '/admin/messages']
-      ).catch(() => {});
+      await insertInApp(
+        recipient.id_utilisateur,
+        'message',
+        `Nouveau message de contact: ${sujet}`,
+        notificationText,
+        '/admin/messages'
+      );
     }
 
     res.status(201).json({ id_message: id });
