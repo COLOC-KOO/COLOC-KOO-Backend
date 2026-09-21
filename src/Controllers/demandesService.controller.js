@@ -36,6 +36,59 @@ async function ensureTable() {
   `);
 }
 
+// Catalogue par defaut, aligne sur la plaquette commerciale Coloc'KOO
+// (tarifs mensuels, charges sociales et conges payes inclus).
+const CATALOGUE_PAR_DEFAUT = [
+  {
+    cle: 'service_proprete',
+    nom: 'Propreté de la maison',
+    description: "Ménage, linge, etc. — à partir de 1 jour/semaine (jusqu'à 5 jours/semaine).",
+    prix: 178000,
+  },
+  {
+    cle: 'service_jardinage',
+    nom: 'Jardinage',
+    description: "Entretien du jardin — à partir de 1 jour/semaine (jusqu'à 5 jours/semaine).",
+    prix: 160000,
+  },
+  {
+    cle: 'service_gardiennage',
+    nom: 'Gardiennage',
+    description: '5 jours/semaine, 5 nuits/semaine ou 24h/24 — option week-end possible.',
+    prix: 458000,
+  },
+  {
+    cle: 'service_petits_travaux',
+    nom: 'Entretien et réalisation petits travaux',
+    description: 'Forfait 3 jours/mois. Les achats et matériaux restent à la charge des colocataires.',
+    prix: 86000,
+  },
+  {
+    cle: 'service_jirama',
+    nom: 'Relevé Jirama et traçabilité',
+    description: 'Forfait 1 relevé par mois.',
+    prix: 9000,
+  },
+];
+
+// Alimente le catalogue la premiere fois : sans cela la page Services
+// affichait « Aucun service disponible pour le moment ».
+async function ensureDefaultCatalogue() {
+  const [row] = await query(
+    "SELECT COUNT(*) AS total FROM services_ckoo WHERE cle_service LIKE 'service\\_%'"
+  );
+  if (Number(row?.total || 0) > 0) return;
+
+  for (const service of CATALOGUE_PAR_DEFAUT) {
+    await query(
+      `INSERT IGNORE INTO services_ckoo (cle_service, nom, description, prix, unite, est_actif)
+       VALUES (?, ?, ?, ?, 'mois', 1)`,
+      [service.cle, service.nom, service.description, service.prix]
+    );
+  }
+  console.log('[services] Catalogue Coloc\'KOO initialise avec les tarifs de la plaquette.');
+}
+
 // ============================================================================
 //  FONCTIONS D'ENVOI D'EMAIL POUR LES DEMANDES DE SERVICE
 // ============================================================================
@@ -199,6 +252,9 @@ async function getDemandeInfo(reference) {
 // GET /api/demandes-service/catalogue — public
 async function listCatalogue(req, res, next) {
   try {
+    await ensureDefaultCatalogue().catch((error) =>
+      console.warn('[services] Catalogue par defaut non initialise :', error.message)
+    );
     const rows = await query(
       `SELECT id_service, cle_service, nom, description, prix, unite
        FROM services_ckoo

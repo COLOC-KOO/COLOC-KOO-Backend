@@ -162,14 +162,18 @@ async function createDepotAnnonce(userId, payload) {
   const parkingMotosVal = normalizeParkingCount(payload.parking_motos);
   const parkingCouvertVal = normalizeParkingCouvert(payload.parking_couvert);
 
+  // Services deja en place (gardien, femme de menage...) : stockes dans
+  // annonces.services_communs pour le filtre "Services" de la recherche.
+  const servicesCommuns = normalizeJsonArray(payload.services_communs);
+
   // 1. Insertion dans la table `annonces`
   const annonceId = await insertAndGetId(
     `
     INSERT INTO annonces
     (id_utilisateur, reference, titre, description, statut, type_bailleur, mode_annonce, type_annonce,
      type_propriete, total_colocataires, surface_totale, adresse_exacte, quartier, id_ville, latitude,
-     longitude, internet, parking_voitures, parking_motos, parking_couvert, booster)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     longitude, internet, parking_voitures, parking_motos, parking_couvert, services_communs, booster)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       userId,
@@ -191,9 +195,22 @@ async function createDepotAnnonce(userId, payload) {
       parkingVoituresVal,
       parkingMotosVal,
       parkingCouvertVal,
+      servicesCommuns.length ? JSON.stringify(servicesCommuns) : null,
       boosterId,
     ]
   );
+
+  // Nombre de colocataires recherches (fiche annonce). Mise a jour separee et
+  // tolerante : tant que la migration 2026-09-18_annonces_nombre_recherches.sql
+  // n'est pas passee, le depot fonctionne sans cette information.
+  const nombreRecherches = toNullableNumber(payload.extra?.nombre_colocataires_recherches); // "4+" -> 4
+  if (nombreRecherches !== null) {
+    try {
+      await query('UPDATE annonces SET nombre_recherches = ? WHERE id_annonce = ?', [nombreRecherches, annonceId]);
+    } catch (err) {
+      console.warn('[depot-annonce] nombre_recherches non enregistre :', err.message);
+    }
+  }
 
   // 2. Insertion dans la table `depot_annonce`
   const depotId = await insertAndGetId(
