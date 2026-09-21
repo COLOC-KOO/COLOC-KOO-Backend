@@ -37,7 +37,7 @@ function toPublicRole(role) {
     moderator: 'moderateur',
     proprio: 'proprietaire',
     coloc: 'colocataire',
-    agent: 'admin',
+    agent: 'agent',
   };
   return map[role] || role || 'colocataire';
 }
@@ -71,6 +71,10 @@ function mapAnnonceRow(row) {
     type_annonce: row.type_annonce,
     type_propriete: row.type_propriete,
     total_colocataires: row.total_colocataires,
+    // Colonne ajoutee par la migration 2026-09-18 (absente = null)
+    nombre_recherches: row.nombre_recherches != null ? Number(row.nombre_recherches) : null,
+    // Pieces du logement (depot_annonce), hors cuisine et salle d'eau
+    nombre_pieces: Number(row.nombre_pieces) > 0 ? Number(row.nombre_pieces) : null,
     candidature_count: row.candidature_count != null ? Number(row.candidature_count) : 0,
     surface_totale: row.surface_totale,
     adresse_exacte: row.adresse_exacte,

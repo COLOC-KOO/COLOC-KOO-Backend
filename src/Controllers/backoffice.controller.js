@@ -3,6 +3,7 @@ const { query, insertAndGetId } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
 const { ensureBoosterSchema, normalizeBoosterPayload } = require('../Services/booster.service');
 const { insertInApp } = require('../Services/notify.service');
+const { normalizeRole } = require('../Middleware/auth.middleware');
 
 const WARNING_REASONS = [
   'Renseignements manquants',
@@ -137,6 +138,8 @@ const PUBLIC_TO_INTERNAL_ROLE = {
   super_admin: 'super_admin',
   proprietaire: 'proprio',
   colocataire: 'coloc',
+  agent: 'agent',
+  agence: 'agent',
 };
 
 function normalizeMemberStatut(statut) {
@@ -360,12 +363,40 @@ async function moderateAnnonce(req, res, next) {
   }
 }
 
+// Statuts acceptes par la colonne utilisateurs.statut
+const MEMBER_STATUSES = ['active', 'inactive', 'suspended', 'banned'];
+
 async function moderateMember(req, res, next) {
   try {
-    const { statut, raison, date_suspension_fin } = req.body;
+    const { raison, date_suspension_fin } = req.body;
+    const statut = normalizeMemberStatut(req.body.statut);
+
+    if (!MEMBER_STATUSES.includes(statut)) {
+      return res.status(400).json({ message: `Statut invalide. Valeurs possibles : ${MEMBER_STATUSES.join(', ')}.` });
+    }
+
+    // Un membre du staff ne peut pas se suspendre lui-meme (il perdrait l'acces).
+    if (Number(req.params.id) === Number(req.user?.id) && statut !== 'active') {
+      return res.status(400).json({ message: 'Vous ne pouvez pas modifier le statut de votre propre compte.' });
+    }
+
+    const [cible] = await query(
+      `SELECT u.id_utilisateur, r.nom_role
+       FROM utilisateurs u JOIN roles r ON r.id_role = u.id_role
+       WHERE u.id_utilisateur = ? LIMIT 1`,
+      [req.params.id]
+    );
+    if (!cible) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+    // Seul un super admin peut modifier le statut d'un autre super admin.
+    if (cible.nom_role === 'super_admin' && normalizeRole(req.user?.role || req.user?.poste) !== 'super_admin') {
+      return res.status(403).json({ message: 'Seul un super administrateur peut modifier ce compte.' });
+    }
+
     await query('UPDATE utilisateurs SET statut = ?, date_suspension_fin = ? WHERE id_utilisateur = ?', [statut, date_suspension_fin || null, req.params.id]);
     await logAction(req, statut === 'suspended' ? 'Suspension' : 'Correction', 'utilisateur', req.params.id, { statut, raison });
-    res.json({ message: 'Membre mis a jour.' });
+    res.json({ message: 'Membre mis a jour.', statut });
   } catch (err) {
     next(err);
   }

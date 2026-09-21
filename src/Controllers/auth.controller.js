@@ -15,6 +15,9 @@ const ROLE_ALIASES = {
   proprio: 'proprio',
   colocataire: 'coloc',
   coloc: 'coloc',
+  agent: 'agent',
+  agence: 'agent',
+  pro: 'agent',
 };
 
 async function resolveRoleId(posteOrRole) {
@@ -164,25 +167,29 @@ const user = await getUserById(id);
       token = signToken(user);
     }
 
-    try {
-      await mail.sendEmail(
-        email,
-        "Bienvenue sur Coloc'KOO",
-        mail.wrapLayout(
-          "Votre compte a ete cree",
-          `
-            <p>Bonjour ${prenom},</p>
-            <p>Votre compte Coloc'KOO est maintenant actif. Vous pouvez chercher une colocation, proposer un logement ou contacter les profils qui vous interessent.</p>
-            ${mail.actionButton('Acceder a mon compte', '/compte')}
-          `
-        ),
-        `Bonjour ${prenom}, votre compte Coloc'KOO a ete cree.`
-      );
-    } catch (error) {
-      console.warn('[auth] Email de bienvenue non envoye:', error.message);
-    }
-
     res.status(201).json({ user, token });
+
+    // Envoi en arriere-plan : attendre le serveur SMTP bloquait la reponse
+    // (parfois plusieurs minutes) et laissait une page blanche a l'inscription.
+    Promise.resolve()
+      .then(() =>
+        mail.sendEmail(
+          email,
+          "Bienvenue sur Coloc'KOO",
+          mail.wrapLayout(
+            "Votre compte a ete cree",
+            `
+              <p>Bonjour ${prenom},</p>
+              <p>Votre compte Coloc'KOO est maintenant actif. Vous pouvez chercher une colocation, proposer un logement ou contacter les profils qui vous interessent.</p>
+              ${mail.actionButton('Acceder a mon compte', '/compte')}
+            `
+          ),
+          `Bonjour ${prenom}, votre compte Coloc'KOO a ete cree.`
+        )
+      )
+      .catch((error) => {
+        console.warn('[auth] Email de bienvenue non envoye:', error.message);
+      });
   } catch (err) {
     console.error('❌ [REGISTER] Erreur:', err);
     next(err);
