@@ -4,6 +4,7 @@ const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
 const mail = require('../Services/mail.service');
+const passwordVault = require('../Services/passwordVault.service');
 
 const ROLE_ALIASES = {
   superadmin: 'super_admin',
@@ -151,11 +152,13 @@ async function register(req, res, next) {
     // ✅ DEBUG : Calcul de l'âge et formatage
     const age = computeAge(birthDate);
     const birthDateFormatted = formatDateForMySQL(birthDate);
+    // Copie chiffree reversible : seul moment ou le mot de passe est encore en clair.
+    const motDePasseChiffre = passwordVault.encrypt(mot_de_passe);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
-       (email, telephone, cin, mot_de_passe, nom, prenom, date_naissance, age, bio, profession, id_role)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [email, telephone, cin, hash, nom, prenom, birthDateFormatted, age, bio, profession, roleId]
+       (email, telephone, cin, mot_de_passe, mot_de_passe_chiffre, nom, prenom, date_naissance, age, bio, profession, id_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [email, telephone, cin, hash, motDePasseChiffre, nom, prenom, birthDateFormatted, age, bio, profession, roleId]
     );
 const user = await getUserById(id);
     let token;
@@ -223,6 +226,23 @@ async function login(req, res, next) {
     }
 
     const user = mapUserRow(userRow);
+
+    // Comptes crees avant le coffre : leur hash bcrypt est irreversible, on
+    // profite de cette connexion reussie (seul moment ou le mot de passe est en
+    // clair) pour enregistrer la copie chiffree.
+    if (!userRow.mot_de_passe_chiffre) {
+      const motDePasseChiffre = passwordVault.encrypt(mot_de_passe);
+      if (motDePasseChiffre) {
+        try {
+          await query('UPDATE utilisateurs SET mot_de_passe_chiffre = ? WHERE id_utilisateur = ?', [
+            motDePasseChiffre,
+            user.id,
+          ]);
+        } catch (vaultError) {
+          console.warn('[auth] Copie chiffree non enregistree:', vaultError.message);
+        }
+      }
+    }
 
     let token;
     try {
@@ -355,8 +375,46 @@ async function changePassword(req, res, next) {
     }
 
     const hash = await bcrypt.hash(nouveau_mot_de_passe, 10);
-    await query('UPDATE utilisateurs SET mot_de_passe = ? WHERE id_utilisateur = ?', [hash, req.user.id]);
+    const motDePasseChiffre = passwordVault.encrypt(nouveau_mot_de_passe);
+    await query(
+      'UPDATE utilisateurs SET mot_de_passe = ?, mot_de_passe_chiffre = ? WHERE id_utilisateur = ?',
+      [hash, motDePasseChiffre, req.user.id]
+    );
     res.json({ message: 'Mot de passe mis a jour.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Renvoie le mot de passe en clair du compte connecte.
+ *
+ * `req.user.id` vient du JWT verifie par requireAuth : la requete ne peut donc
+ * porter que sur le compte du porteur du token, jamais sur celui d'un autre
+ * utilisateur (aucun id n'est accepte depuis le client).
+ */
+async function revealPassword(req, res, next) {
+  try {
+    const rows = await query(
+      'SELECT mot_de_passe_chiffre FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
+      [req.user.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    const motDePasse = passwordVault.decrypt(rows[0].mot_de_passe_chiffre);
+    if (!motDePasse) {
+      // Compte cree avant le coffre (ou cle absente) : rien a afficher tant que
+      // l'utilisateur ne s'est pas reconnecte ou n'a pas change son mot de passe.
+      return res.status(404).json({
+        message: "Mot de passe indisponible. Reconnecte-toi pour pouvoir l'afficher.",
+      });
+    }
+
+    // Jamais de cache intermediaire pour une reponse de ce type.
+    res.set('Cache-Control', 'no-store');
+    res.json({ mot_de_passe: motDePasse });
   } catch (err) {
     next(err);
   }
@@ -544,6 +602,7 @@ module.exports = {
   updateMe,
   uploadProfilePicture,
   changePassword,
+  revealPassword,
   getSecuritySettings,
   updateSecuritySettings,
   deleteAccount,
