@@ -23,6 +23,8 @@ router.get('/me', requireAuth, controller.me);
 router.patch('/me', requireAuth, controller.updateMe);
 router.post('/me/upload', requireAuth, upload.single('photo'), controller.uploadProfilePicture);
 router.patch('/me/password', requireAuth, controller.changePassword);
+// Affichage du mot de passe en clair : reservé au compte porteur du token.
+router.get('/me/password', requireAuth, controller.revealPassword);
 router.get('/me/security', requireAuth, controller.getSecuritySettings);
 router.patch('/me/security', requireAuth, controller.updateSecuritySettings);
 router.delete('/me', requireAuth, controller.deleteAccount);
