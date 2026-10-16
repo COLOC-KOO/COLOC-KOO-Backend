@@ -5,6 +5,7 @@ const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
 const mail = require('../Services/mail.service');
 const passwordVault = require('../Services/passwordVault.service');
+const { isMaintenanceMode, isStaffRole } = require('../Services/siteMaintenance.service');
 
 const ROLE_ALIASES = {
   superadmin: 'super_admin',
@@ -118,6 +119,13 @@ function computeAge(birthDate) {
 
 async function register(req, res, next) {
   try {
+    if (isMaintenanceMode()) {
+      return res.status(503).json({
+        code: 'SITE_MAINTENANCE',
+        message: 'La création de comptes est temporairement suspendue pendant la maintenance du site.',
+      });
+    }
+
     const {
       email,
       mot_de_passe,
@@ -223,6 +231,13 @@ async function login(req, res, next) {
     const ok = await bcrypt.compare(mot_de_passe, userRow.mot_de_passe);
     if (!ok) {
       return res.status(401).json({ message: 'Identifiants invalides.' });
+    }
+
+    if (isMaintenanceMode() && !isStaffRole(userRow.nom_role)) {
+      return res.status(503).json({
+        code: 'SITE_MAINTENANCE',
+        message: 'La connexion est temporairement réservée à l’équipe autorisée pendant la maintenance du site.',
+      });
     }
 
     const user = mapUserRow(userRow);
