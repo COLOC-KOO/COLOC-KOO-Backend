@@ -523,14 +523,33 @@ async function sendWarning(req, res, next) {
 async function conversations(req, res, next) {
   try {
     const rows = await query(
-      `SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
-              GREATEST(id_expediteur, id_destinataire) AS membre_b,
-              MAX(date_envoi) AS dernier_message,
-              COUNT(*) AS total_messages,
-              SUM(CASE WHEN est_lu = 0 THEN 1 ELSE 0 END) AS non_lus
-       FROM messages
-       GROUP BY membre_a, membre_b
-       ORDER BY dernier_message DESC
+      `SELECT last.membre_a, last.membre_b,
+              last.id_expediteur AS interlocuteur_id,
+              u.nom AS interlocuteur_nom, u.prenom AS interlocuteur_prenom,
+              last.contenu AS apercu_message,
+              last.date_envoi AS dernier_message, last.date_envoi AS date_dernier_message,
+              totals.total_messages, totals.non_lus
+       FROM (
+         SELECT m.*,
+                LEAST(m.id_expediteur, m.id_destinataire) AS membre_a,
+                GREATEST(m.id_expediteur, m.id_destinataire) AS membre_b
+         FROM messages m
+         INNER JOIN (
+           SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
+                  GREATEST(id_expediteur, id_destinataire) AS membre_b,
+                  MAX(id_message) AS dernier_id
+           FROM messages GROUP BY membre_a, membre_b
+         ) latest ON latest.dernier_id = m.id_message
+       ) last
+       JOIN utilisateurs u ON u.id_utilisateur = last.id_expediteur
+       JOIN (
+         SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
+                GREATEST(id_expediteur, id_destinataire) AS membre_b,
+                COUNT(*) AS total_messages,
+                SUM(CASE WHEN est_lu = 0 THEN 1 ELSE 0 END) AS non_lus
+         FROM messages GROUP BY membre_a, membre_b
+       ) totals ON totals.membre_a = last.membre_a AND totals.membre_b = last.membre_b
+       ORDER BY last.date_envoi DESC
        LIMIT 300`
     );
     res.json(rows);
