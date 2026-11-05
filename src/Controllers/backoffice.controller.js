@@ -6,6 +6,25 @@ const { insertInApp } = require('../Services/notify.service');
 const { normalizeRole } = require('../Middleware/auth.middleware');
 const journalService = require('../Services/journal.service');
 
+let partnerPricingSchemaPromise;
+async function ensurePartnerPricingSchema() {
+  if (!partnerPricingSchemaPromise) {
+    partnerPricingSchemaPromise = (async () => {
+      const columns = await query(
+        'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        ['partenaires', 'montant']
+      );
+      if (!columns.length) {
+        await query('ALTER TABLE partenaires ADD COLUMN montant DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER niveau');
+      }
+    })().catch((error) => {
+      partnerPricingSchemaPromise = undefined;
+      throw error;
+    });
+  }
+  await partnerPricingSchemaPromise;
+}
+
 const WARNING_REASONS = [
   'Renseignements manquants',
   'Prix a justifier',
@@ -1204,6 +1223,7 @@ async function deletePartenaireRequest(req, res, next) {
 
 async function partenaires(req, res, next) {
   try {
+    await ensurePartnerPricingSchema();
     const rows = await query('SELECT * FROM partenaires ORDER BY actif DESC, niveau DESC, nom ASC');
     res.json(rows);
   } catch (err) {
@@ -1226,11 +1246,19 @@ async function uploadPartenaireLogo(req, res, next) {
 
 async function createPartenaire(req, res, next) {
   try {
-    const { nom, secteur, niveau, remise, engagement, logo, actif = 1 } = req.body;
-    if (!nom) return res.status(400).json({ message: 'Nom requis.' });
+    await ensurePartnerPricingSchema();
+    const { nom, secteur, niveau = 'Bronze', montant = 0, remise, engagement, logo, actif = 1 } = req.body;
+    if (typeof nom !== 'string' || !nom.trim()) return res.status(400).json({ message: 'Nom requis.' });
+    if (!['Bronze', 'Argent', 'Or', 'Diamant'].includes(niveau)) {
+      return res.status(400).json({ message: 'Niveau de partenariat invalide.' });
+    }
+    const amount = Number(montant);
+    if (!Number.isFinite(amount) || amount < 0) {
+      return res.status(400).json({ message: 'Le montant du partenariat doit être un nombre positif ou nul.' });
+    }
     const id = await insertAndGetId(
-      'INSERT INTO partenaires (nom, secteur, niveau, remise, engagement, logo, actif) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [nom, secteur || null, niveau || null, remise || null, engagement || null, logo || null, actif ? 1 : 0]
+      'INSERT INTO partenaires (nom, secteur, niveau, montant, remise, engagement, logo, actif) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [nom.trim(), secteur || null, niveau, amount, remise || null, engagement || null, logo || null, actif ? 1 : 0]
     );
     await logAction(req, 'Creation', 'partenaire', id, { operation: 'creation' });
     res.status(201).json({ id_partenaire: id });
@@ -1241,19 +1269,35 @@ async function createPartenaire(req, res, next) {
 
 async function updatePartenaire(req, res, next) {
   try {
-    const allowed = ['nom', 'secteur', 'niveau', 'remise', 'engagement', 'logo', 'actif'];
+    await ensurePartnerPricingSchema();
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ message: 'Identifiant partenaire invalide.' });
+    }
+    const existing = await query('SELECT id_partenaire FROM partenaires WHERE id_partenaire = ?', [id]);
+    if (!existing.length) return res.status(404).json({ message: 'Partenaire introuvable.' });
+
+    const allowed = ['nom', 'secteur', 'niveau', 'montant', 'remise', 'engagement', 'logo', 'actif'];
     const sets = [];
     const values = [];
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
+        if (key === 'montant') {
+          const amount = Number(req.body[key]);
+          if (!Number.isFinite(amount) || amount < 0) {
+            return res.status(400).json({ message: 'Le montant du partenariat doit être un nombre positif ou nul.' });
+          }
+          values.push(amount);
+        } else {
+          values.push(req.body[key]);
+        }
         sets.push(`${key} = ?`);
-        values.push(req.body[key]);
       }
     }
     if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
-    values.push(req.params.id);
+    values.push(id);
     await query(`UPDATE partenaires SET ${sets.join(', ')} WHERE id_partenaire = ?`, values);
-    await logAction(req, 'Correction', 'partenaire', req.params.id, req.body);
+    await logAction(req, 'Correction', 'partenaire', id, req.body);
     res.json({ message: 'Partenaire mis a jour.' });
   } catch (err) {
     next(err);
@@ -1262,8 +1306,14 @@ async function updatePartenaire(req, res, next) {
 
 async function deletePartenaire(req, res, next) {
   try {
-    await query('DELETE FROM partenaires WHERE id_partenaire = ?', [req.params.id]);
-    await logAction(req, 'Correction', 'partenaire', req.params.id, { operation: 'suppression' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ message: 'Identifiant partenaire invalide.' });
+    }
+    const existing = await query('SELECT id_partenaire FROM partenaires WHERE id_partenaire = ?', [id]);
+    if (!existing.length) return res.status(404).json({ message: 'Partenaire introuvable.' });
+    await query('DELETE FROM partenaires WHERE id_partenaire = ?', [id]);
+    await logAction(req, 'Correction', 'partenaire', id, { operation: 'suppression' });
     res.json({ message: 'Partenaire supprime.' });
   } catch (err) {
     next(err);

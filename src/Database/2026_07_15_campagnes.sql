@@ -5,6 +5,7 @@
 CREATE TABLE `campagnes` (
   `id_campagne` int(11) NOT NULL AUTO_INCREMENT,
   `id_partenaire` int(11) NOT NULL,
+  `id_ville` int(11) DEFAULT NULL,
   `titre` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `description` text COLLATE utf8mb4_unicode_ci,
   `emplacement` enum('carte','fil_annonces','bandeau_regional','page_partenaire') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'fil_annonces',
