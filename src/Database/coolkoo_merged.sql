@@ -379,6 +379,7 @@
     `nom` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
     `secteur` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `niveau` enum('Bronze','Argent','Or','Diamant') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Bronze',
+    `montant` decimal(14,2) NOT NULL DEFAULT '0.00',
     `remise` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `engagement` text COLLATE utf8mb4_unicode_ci,
     `logo` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -556,6 +557,7 @@
     `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
     `telephone` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `mot_de_passe` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `mot_de_passe_chiffre` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `nom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
     `prenom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
     `age` int(3) DEFAULT NULL,
@@ -1249,6 +1251,7 @@ ON DUPLICATE KEY UPDATE `valeur` = VALUES(`valeur`);
 CREATE TABLE `campagnes` (
   `id_campagne` int(11) NOT NULL AUTO_INCREMENT,
   `id_partenaire` int(11) NOT NULL,
+  `id_ville` int(11) DEFAULT NULL,
   `titre` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `description` text COLLATE utf8mb4_unicode_ci,
   `emplacement` enum('carte','fil_annonces','bandeau_regional','page_partenaire') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'fil_annonces',

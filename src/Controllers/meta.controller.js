@@ -1,6 +1,6 @@
 ﻿const { query } = require('../Services/db.service');
 const { ensureBoosterSchema } = require('../Services/booster.service');
-const { isMaintenanceMode } = require('../Services/siteMaintenance.service');
+const { getMaintenanceMode } = require('../Services/siteMaintenance.service');
 
 // ============================================================================
 //  CONTENU DU CONTRAT â€” 100% en base (bareme, paiement, clauses, textes)
@@ -267,9 +267,13 @@ async function listBoosters(req, res, next) {
     next(err);
   }
 }
-function siteStatus(req, res) {
-  res.set('Cache-Control', 'no-store');
-  res.json({ maintenanceMode: isMaintenanceMode() });
+async function siteStatus(req, res, next) {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ maintenanceMode: await getMaintenanceMode() });
+  } catch (err) {
+    next(err);
+  }
 }
 
 module.exports = { listRoles, listLangues, listRegions, listVilles, listServices, listBoosters, contractConfig, ensureContractContent, getConfigValue, siteStatus };

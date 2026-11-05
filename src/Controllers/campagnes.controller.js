@@ -2,9 +2,77 @@ const { query, insertAndGetId } = require('../Services/db.service');
 const path = require('path');
 const fs = require('fs');
 
+const CAMPAIGN_PLACEMENTS = ['carte', 'fil_annonces', 'bandeau_regional', 'page_partenaire'];
+const CAMPAIGN_STATUSES = ['active', 'programmee', 'suspendue', 'terminee'];
+const CAMPAIGN_STATUS_SQL = `
+  CASE
+    WHEN c.statut = 'suspendue' THEN 'suspendue'
+    WHEN DATE(c.date_debut) > CURRENT_DATE() THEN 'programmee'
+    WHEN c.date_fin IS NOT NULL AND DATE(c.date_fin) < CURRENT_DATE() THEN 'terminee'
+    ELSE 'active'
+  END
+`;
+
+let campaignCitySchemaPromise;
+async function ensureCampaignCitySchema() {
+  if (!campaignCitySchemaPromise) {
+    campaignCitySchemaPromise = (async () => {
+      const columns = await query(
+        'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        ['campagnes', 'id_ville']
+      );
+      if (!columns.length) {
+        await query('ALTER TABLE campagnes ADD COLUMN id_ville INT NULL AFTER id_partenaire');
+      }
+
+      const foreignKeys = await query(
+        `SELECT CONSTRAINT_NAME
+         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'campagnes'
+           AND COLUMN_NAME = 'id_ville'
+           AND REFERENCED_TABLE_NAME = 'villes'
+         LIMIT 1`
+      );
+      if (!foreignKeys.length) {
+        await query(
+          'ALTER TABLE campagnes ADD CONSTRAINT fk_campagnes_ville FOREIGN KEY (id_ville) REFERENCES villes (id_ville) ON DELETE SET NULL'
+        );
+      }
+    })().catch((error) => {
+      campaignCitySchemaPromise = undefined;
+      throw error;
+    });
+  }
+  await campaignCitySchemaPromise;
+}
+
+function isValidDateOnly(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function asDateOnly(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value || '').slice(0, 10);
+}
+
+function validCampaignDates(startDate, endDate) {
+  return isValidDateOnly(startDate)
+    && (!endDate || (isValidDateOnly(endDate) && endDate >= startDate));
+}
+
+function parseCityId(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : Number.NaN;
+}
+
 // Récupérer les campagnes publiques liées aux partenaires
 async function listPublic(req, res, next) {
   try {
+    await ensureCampaignCitySchema();
     const rows = await query(`
       SELECT
         c.id_campagne,
@@ -15,7 +83,7 @@ async function listPublic(req, res, next) {
         c.visuel,
         c.date_debut,
         c.date_fin,
-        c.statut,
+        ${CAMPAIGN_STATUS_SQL} AS statut,
         c.date_creation,
         p.nom AS partenaire_nom,
         p.secteur,
@@ -23,10 +91,15 @@ async function listPublic(req, res, next) {
         p.remise,
         p.engagement,
         p.logo,
-        p.actif
+        p.actif,
+        c.id_ville,
+        v.nom_ville AS ville_nom
       FROM campagnes c
       LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
-      WHERE COALESCE(c.statut, 'active') = 'active'
+      LEFT JOIN villes v ON v.id_ville = c.id_ville
+      WHERE COALESCE(c.statut, 'active') <> 'suspendue'
+        AND DATE(c.date_debut) <= CURRENT_DATE()
+        AND (c.date_fin IS NULL OR DATE(c.date_fin) >= CURRENT_DATE())
         AND COALESCE(p.actif, 1) = 1
       ORDER BY c.date_creation DESC, c.date_debut DESC
     `);
@@ -40,10 +113,13 @@ async function listPublic(req, res, next) {
 // Récupérer toutes les campagnes
 async function listAll(req, res, next) {
   try {
+    await ensureCampaignCitySchema();
     const rows = await query(`
-      SELECT c.*, p.nom as partenaire_nom, p.niveau as partenaire_niveau
+      SELECT c.*, ${CAMPAIGN_STATUS_SQL} AS statut_calcule,
+        p.nom as partenaire_nom, p.niveau as partenaire_niveau, v.nom_ville AS ville_nom
       FROM campagnes c
       LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
+      LEFT JOIN villes v ON v.id_ville = c.id_ville
       ORDER BY c.date_creation DESC
     `);
     res.json(rows);
@@ -56,11 +132,14 @@ async function listAll(req, res, next) {
 // Récupérer une campagne par son ID
 async function getOne(req, res, next) {
   try {
+    await ensureCampaignCitySchema();
     const { id } = req.params;
     const rows = await query(`
-      SELECT c.*, p.nom as partenaire_nom, p.niveau as partenaire_niveau
+      SELECT c.*, ${CAMPAIGN_STATUS_SQL} AS statut_calcule,
+        p.nom as partenaire_nom, p.niveau as partenaire_niveau, v.nom_ville AS ville_nom
       FROM campagnes c
       LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
+      LEFT JOIN villes v ON v.id_ville = c.id_ville
       WHERE c.id_campagne = ?
     `, [id]);
     
@@ -77,23 +156,41 @@ async function getOne(req, res, next) {
 // Créer une campagne
 async function create(req, res, next) {
   try {
-    const { 
+    await ensureCampaignCitySchema();
+    const {
       id_partenaire, 
       titre, 
       description, 
       emplacement, 
       visuel, 
       date_debut, 
-      date_fin, 
-      statut 
+      date_fin,
+      statut,
+      id_ville,
     } = req.body;
-    
-    console.log('📝 Création campagne:', { id_partenaire, titre, description, emplacement, date_debut, date_fin, statut });
     
     if (!id_partenaire || !titre || !date_debut) {
       return res.status(400).json({ 
         message: 'Partenaire, titre et date de début sont requis.' 
       });
+    }
+    const campaignPlacement = emplacement || 'fil_annonces';
+    if (!CAMPAIGN_PLACEMENTS.includes(campaignPlacement)) {
+      return res.status(400).json({ message: 'Emplacement de campagne invalide.' });
+    }
+    if (!validCampaignDates(date_debut, date_fin || null)) {
+      return res.status(400).json({ message: 'Les dates de campagne sont invalides.' });
+    }
+    if (statut !== undefined && !CAMPAIGN_STATUSES.includes(statut)) {
+      return res.status(400).json({ message: 'Statut de campagne invalide.' });
+    }
+    const cityId = campaignPlacement === 'bandeau_regional' ? parseCityId(id_ville) : null;
+    if (Number.isNaN(cityId) || (campaignPlacement === 'bandeau_regional' && !cityId)) {
+      return res.status(400).json({ message: 'Une ville doit être sélectionnée pour un bandeau régional.' });
+    }
+    if (cityId) {
+      const city = await query('SELECT id_ville FROM villes WHERE id_ville = ?', [cityId]);
+      if (!city.length) return res.status(400).json({ message: 'Ville de campagne introuvable.' });
     }
 
     // Vérifier que le partenaire existe
@@ -108,7 +205,8 @@ async function create(req, res, next) {
 
     const id_campagne = await insertAndGetId(`
       INSERT INTO campagnes (
-        id_partenaire, 
+        id_partenaire,
+        id_ville,
         titre, 
         description, 
         emplacement, 
@@ -116,25 +214,26 @@ async function create(req, res, next) {
         date_debut, 
         date_fin, 
         statut
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      id_partenaire, 
+      id_partenaire,
+      cityId,
       titre.trim(), 
       description || null, 
-      emplacement || 'fil_annonces', 
+      campaignPlacement,
       visuel || null, 
       date_debut, 
       date_fin || null, 
-      statut || 'programmee'
+      statut === 'suspendue' ? 'suspendue' : 'active'
     ]);
-
-    console.log(`✅ Campagne créée avec l'ID: ${id_campagne}`);
 
     // Récupérer la campagne créée
     const created = await query(`
-      SELECT c.*, p.nom as partenaire_nom, p.niveau as partenaire_niveau
+      SELECT c.*, ${CAMPAIGN_STATUS_SQL} AS statut_calcule,
+        p.nom as partenaire_nom, p.niveau as partenaire_niveau, v.nom_ville AS ville_nom
       FROM campagnes c
       LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
+      LEFT JOIN villes v ON v.id_ville = c.id_ville
       WHERE c.id_campagne = ?
     `, [id_campagne]);
 
@@ -152,8 +251,9 @@ async function create(req, res, next) {
 // Mettre à jour une campagne
 async function update(req, res, next) {
   try {
+    await ensureCampaignCitySchema();
     const { id } = req.params;
-    const { 
+    const {
       id_partenaire, 
       titre, 
       description, 
@@ -161,17 +261,49 @@ async function update(req, res, next) {
       visuel, 
       date_debut, 
       date_fin, 
-      statut 
+      statut,
+      id_ville,
     } = req.body;
     
     // Vérifier que la campagne existe
     const existing = await query(
-      'SELECT id_campagne FROM campagnes WHERE id_campagne = ?',
+      'SELECT id_campagne, id_partenaire, emplacement, id_ville, date_debut, date_fin FROM campagnes WHERE id_campagne = ?',
       [id]
     );
     
     if (!existing.length) {
       return res.status(404).json({ message: 'Campagne introuvable.' });
+    }
+
+    const startDate = date_debut === undefined ? asDateOnly(existing[0].date_debut) : date_debut;
+    const endDate = date_fin === undefined ? asDateOnly(existing[0].date_fin) || null : date_fin;
+    if (!validCampaignDates(startDate, endDate)) {
+      return res.status(400).json({ message: 'Les dates de campagne sont invalides.' });
+    }
+    if (emplacement !== undefined && !CAMPAIGN_PLACEMENTS.includes(emplacement)) {
+      return res.status(400).json({ message: 'Emplacement de campagne invalide.' });
+    }
+    if (statut !== undefined && !CAMPAIGN_STATUSES.includes(statut)) {
+      return res.status(400).json({ message: 'Statut de campagne invalide.' });
+    }
+    const campaignPlacement = emplacement === undefined ? existing[0].emplacement : emplacement;
+    let cityId = id_ville === undefined ? existing[0].id_ville : parseCityId(id_ville);
+    if (campaignPlacement !== 'bandeau_regional') cityId = null;
+    if (Number.isNaN(cityId) || (campaignPlacement === 'bandeau_regional' && !cityId)) {
+      return res.status(400).json({ message: 'Une ville doit être sélectionnée pour un bandeau régional.' });
+    }
+    if (cityId) {
+      const city = await query('SELECT id_ville FROM villes WHERE id_ville = ?', [cityId]);
+      if (!city.length) return res.status(400).json({ message: 'Ville de campagne introuvable.' });
+    }
+    if (id_partenaire !== undefined) {
+      const partenaire = await query(
+        'SELECT id_partenaire FROM partenaires WHERE id_partenaire = ?',
+        [id_partenaire]
+      );
+      if (!partenaire.length) {
+        return res.status(404).json({ message: 'Partenaire introuvable.' });
+      }
     }
 
     const sets = [];
@@ -193,6 +325,10 @@ async function update(req, res, next) {
       sets.push('emplacement = ?'); 
       values.push(emplacement); 
     }
+    if (id_ville !== undefined || emplacement !== undefined) {
+      sets.push('id_ville = ?');
+      values.push(cityId);
+    }
     if (visuel !== undefined) { 
       sets.push('visuel = ?'); 
       values.push(visuel || null); 
@@ -205,9 +341,9 @@ async function update(req, res, next) {
       sets.push('date_fin = ?'); 
       values.push(date_fin || null); 
     }
-    if (statut !== undefined) { 
-      sets.push('statut = ?'); 
-      values.push(statut); 
+    if (statut !== undefined) {
+      sets.push('statut = ?');
+      values.push(statut === 'suspendue' ? 'suspendue' : 'active');
     }
     
     if (sets.length === 0) {
@@ -221,9 +357,11 @@ async function update(req, res, next) {
 
     // Récupérer la campagne mise à jour
     const updated = await query(`
-      SELECT c.*, p.nom as partenaire_nom, p.niveau as partenaire_niveau
+      SELECT c.*, ${CAMPAIGN_STATUS_SQL} AS statut_calcule,
+        p.nom as partenaire_nom, p.niveau as partenaire_niveau, v.nom_ville AS ville_nom
       FROM campagnes c
       LEFT JOIN partenaires p ON p.id_partenaire = c.id_partenaire
+      LEFT JOIN villes v ON v.id_ville = c.id_ville
       WHERE c.id_campagne = ?
     `, [id]);
 
