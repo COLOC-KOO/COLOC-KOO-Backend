@@ -11,6 +11,14 @@ const {
 } = require('../Services/siteMaintenance.service');
 
 let partnerPricingSchemaPromise;
+const PARTNER_PRICING_CONFIG_KEY = 'PARTNER_PRICING';
+const DEFAULT_PARTNER_PRICING = Object.freeze({
+  Bronze: 0,
+  Argent: 0,
+  Or: 0,
+  Diamant: 0,
+});
+
 async function ensurePartnerPricingSchema() {
   if (!partnerPricingSchemaPromise) {
     partnerPricingSchemaPromise = (async () => {
@@ -27,6 +35,92 @@ async function ensurePartnerPricingSchema() {
     });
   }
   await partnerPricingSchemaPromise;
+}
+
+async function getPartnerPricing() {
+  await ensureBackofficeSchema();
+  const rows = await query(
+    'SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1',
+    [PARTNER_PRICING_CONFIG_KEY]
+  );
+  if (!rows.length || rows[0].valeur == null) return { ...DEFAULT_PARTNER_PRICING };
+
+  let stored = rows[0].valeur;
+  if (typeof stored === 'string') {
+    try {
+      stored = JSON.parse(stored);
+    } catch (error) {
+      throw new Error('La grille tarifaire des partenaires est invalide.');
+    }
+  }
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+    throw new Error('La grille tarifaire des partenaires est invalide.');
+  }
+
+  const pricing = {};
+  for (const level of Object.keys(DEFAULT_PARTNER_PRICING)) {
+    if (stored[level] === null || stored[level] === undefined || stored[level] === '') {
+      throw new Error(`Le tarif partenaire ${level} est invalide.`);
+    }
+    const amount = Number(stored[level]);
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new Error(`Le tarif partenaire ${level} est invalide.`);
+    }
+    pricing[level] = amount;
+  }
+  return pricing;
+}
+
+async function partnerPricing(req, res, next) {
+  try {
+    res.json(await getPartnerPricing());
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updatePartnerPricing(req, res, next) {
+  try {
+    const pricing = req.body?.tarifs;
+    if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) {
+      return res.status(400).json({ message: 'La grille tarifaire est requise.' });
+    }
+    const normalized = {};
+    for (const level of Object.keys(DEFAULT_PARTNER_PRICING)) {
+      if (pricing[level] === null || pricing[level] === undefined || pricing[level] === '') {
+        return res.status(400).json({ message: `Le tarif ${level} est requis.` });
+      }
+      const amount = Number(pricing[level]);
+      if (!Number.isFinite(amount) || amount < 0) {
+        return res.status(400).json({ message: `Le tarif ${level} doit être un nombre positif ou nul.` });
+      }
+      normalized[level] = amount;
+    }
+
+    await ensureBackofficeSchema();
+    await ensurePartnerPricingSchema();
+    await withTransaction(async (tx) => {
+      await tx(
+        'INSERT INTO configuration_backoffice (cle, valeur) VALUES (?, ?) ON DUPLICATE KEY UPDATE valeur = VALUES(valeur), date_modification = NOW()',
+        [PARTNER_PRICING_CONFIG_KEY, JSON.stringify(normalized)]
+      );
+      await tx(
+        `UPDATE partenaires
+         SET montant = CASE niveau
+           WHEN 'Bronze' THEN ?
+           WHEN 'Argent' THEN ?
+           WHEN 'Or' THEN ?
+           WHEN 'Diamant' THEN ?
+           ELSE montant
+         END`,
+        [normalized.Bronze, normalized.Argent, normalized.Or, normalized.Diamant]
+      );
+    });
+    await logAction(req, 'Correction', 'configuration', null, { cle: PARTNER_PRICING_CONFIG_KEY });
+    res.json({ message: 'Grille tarifaire des partenaires enregistrée.' });
+  } catch (err) {
+    next(err);
+  }
 }
 
 const WARNING_REASONS = [
@@ -707,7 +801,7 @@ async function conversations(req, res, next) {
   try {
     const rows = await query(
       `SELECT last.membre_a, last.membre_b,
-              last.id_expediteur AS interlocuteur_id,
+              last.interlocuteur_id,
               u.nom AS interlocuteur_nom, u.prenom AS interlocuteur_prenom,
               last.contenu AS apercu_message,
               last.date_envoi AS dernier_message, last.date_envoi AS date_dernier_message,
@@ -715,7 +809,8 @@ async function conversations(req, res, next) {
        FROM (
          SELECT m.*,
                 LEAST(m.id_expediteur, m.id_destinataire) AS membre_a,
-                GREATEST(m.id_expediteur, m.id_destinataire) AS membre_b
+                GREATEST(m.id_expediteur, m.id_destinataire) AS membre_b,
+                CASE WHEN m.id_expediteur = ? THEN m.id_destinataire ELSE m.id_expediteur END AS interlocuteur_id
          FROM messages m
          INNER JOIN (
            SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
@@ -724,7 +819,7 @@ async function conversations(req, res, next) {
            FROM messages GROUP BY membre_a, membre_b
          ) latest ON latest.dernier_id = m.id_message
        ) last
-       JOIN utilisateurs u ON u.id_utilisateur = last.id_expediteur
+       JOIN utilisateurs u ON u.id_utilisateur = last.interlocuteur_id
        JOIN (
          SELECT LEAST(id_expediteur, id_destinataire) AS membre_a,
                 GREATEST(id_expediteur, id_destinataire) AS membre_b,
@@ -733,7 +828,8 @@ async function conversations(req, res, next) {
          FROM messages GROUP BY membre_a, membre_b
        ) totals ON totals.membre_a = last.membre_a AND totals.membre_b = last.membre_b
        ORDER BY last.date_envoi DESC
-       LIMIT 300`
+       LIMIT 300`,
+      [actorId(req)]
     );
     res.json(rows);
   } catch (err) {
@@ -1251,15 +1347,13 @@ async function uploadPartenaireLogo(req, res, next) {
 async function createPartenaire(req, res, next) {
   try {
     await ensurePartnerPricingSchema();
-    const { nom, secteur, niveau = 'Bronze', montant = 0, remise, engagement, logo, actif = 1 } = req.body;
+    const { nom, secteur, niveau = 'Bronze', remise, engagement, logo, actif = 1 } = req.body;
     if (typeof nom !== 'string' || !nom.trim()) return res.status(400).json({ message: 'Nom requis.' });
     if (!['Bronze', 'Argent', 'Or', 'Diamant'].includes(niveau)) {
       return res.status(400).json({ message: 'Niveau de partenariat invalide.' });
     }
-    const amount = Number(montant);
-    if (!Number.isFinite(amount) || amount < 0) {
-      return res.status(400).json({ message: 'Le montant du partenariat doit être un nombre positif ou nul.' });
-    }
+    const pricing = await getPartnerPricing();
+    const amount = pricing[niveau];
     const id = await insertAndGetId(
       'INSERT INTO partenaires (nom, secteur, niveau, montant, remise, engagement, logo, actif) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [nom.trim(), secteur || null, niveau, amount, remise || null, engagement || null, logo || null, actif ? 1 : 0]
@@ -1278,25 +1372,28 @@ async function updatePartenaire(req, res, next) {
     if (!Number.isInteger(id) || id < 1) {
       return res.status(400).json({ message: 'Identifiant partenaire invalide.' });
     }
-    const existing = await query('SELECT id_partenaire FROM partenaires WHERE id_partenaire = ?', [id]);
+    const existing = await query('SELECT id_partenaire, niveau FROM partenaires WHERE id_partenaire = ?', [id]);
     if (!existing.length) return res.status(404).json({ message: 'Partenaire introuvable.' });
 
-    const allowed = ['nom', 'secteur', 'niveau', 'montant', 'remise', 'engagement', 'logo', 'actif'];
+    const allowed = ['nom', 'secteur', 'niveau', 'remise', 'engagement', 'logo', 'actif'];
     const sets = [];
     const values = [];
+    if (req.body.niveau !== undefined && !['Bronze', 'Argent', 'Or', 'Diamant'].includes(req.body.niveau)) {
+      return res.status(400).json({ message: 'Niveau de partenariat invalide.' });
+    }
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
-        if (key === 'montant') {
-          const amount = Number(req.body[key]);
-          if (!Number.isFinite(amount) || amount < 0) {
-            return res.status(400).json({ message: 'Le montant du partenariat doit être un nombre positif ou nul.' });
-          }
-          values.push(amount);
-        } else {
-          values.push(req.body[key]);
-        }
+        values.push(req.body[key]);
         sets.push(`${key} = ?`);
       }
+    }
+    if (req.body.montant !== undefined && req.body.niveau === undefined) {
+      return res.status(400).json({ message: 'Le montant est défini automatiquement selon le niveau du partenariat.' });
+    }
+    if (req.body.niveau !== undefined) {
+      const pricing = await getPartnerPricing();
+      sets.push('montant = ?');
+      values.push(pricing[req.body.niveau]);
     }
     if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
     values.push(id);
@@ -1565,6 +1662,9 @@ async function saveConfiguration(req, res, next) {
     if (cle === MAINTENANCE_CONFIG_KEY) {
       return res.status(403).json({ message: 'Utilisez le contrôle dédié au super-administrateur pour modifier le mode maintenance.' });
     }
+    if (cle === PARTNER_PRICING_CONFIG_KEY) {
+      return res.status(403).json({ message: 'Utilisez le contrôle dédié au super-administrateur pour modifier les tarifs partenaires.' });
+    }
     await query(
       'INSERT INTO configuration_backoffice (cle, valeur) VALUES (?, ?) ON DUPLICATE KEY UPDATE valeur = VALUES(valeur), date_modification = NOW()',
       [cle, JSON.stringify(valeur ?? null)]
@@ -1653,6 +1753,8 @@ module.exports = {
   updatePartenaireRequest,
   deletePartenaireRequest,
   statistiquesColocation,
+  partnerPricing,
+  updatePartnerPricing,
   uploadPartenaireLogo,
   partenaires,
   createPartenaire,

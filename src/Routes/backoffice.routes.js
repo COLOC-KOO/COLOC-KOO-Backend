@@ -49,6 +49,8 @@ router.get('/boosters', controller.boosters);
 router.post('/boosters', controller.createBooster);
 router.patch('/boosters/:id', controller.updateBooster);
 router.delete('/boosters/:id', controller.deleteBooster);
+router.get('/partenaires/tarifs', controller.partnerPricing);
+router.put('/partenaires/tarifs', requireRole('super_admin'), controller.updatePartnerPricing);
 router.get('/partenaires', controller.partenaires);
 router.get('/partenaires/requests', controller.partenaireRequests);
 router.patch('/partenaires/requests/:id', controller.updatePartenaireRequest);
