@@ -18,6 +18,7 @@ async function ensureTable() {
       id_service INT(11) NOT NULL,
       quantite INT(11) NOT NULL DEFAULT 1,
       prix_unitaire INT(11) NOT NULL,
+      reduction_pourcentage DECIMAL(5,2) NOT NULL DEFAULT 0,
       statut ENUM('nouvelle','en-cours','traitee','annulee') NOT NULL DEFAULT 'nouvelle',
       message TEXT NULL,
       telephone VARCHAR(30) NULL,
@@ -256,7 +257,8 @@ async function listCatalogue(req, res, next) {
       console.warn('[services] Catalogue par defaut non initialise :', error.message)
     );
     const rows = await query(
-      `SELECT id_service, cle_service, nom, description, prix, unite
+      `SELECT id_service, cle_service, nom, description, prix, unite,
+              reduction_4_jours, reduction_5_jours
        FROM services_ckoo
        WHERE cle_service LIKE 'service\\_%' AND est_actif = 1
        ORDER BY nom ASC`
@@ -269,6 +271,8 @@ async function listCatalogue(req, res, next) {
         description: r.description,
         prix: Number(r.prix) || 0,
         unite: r.unite,
+        reduction_4_jours: Number(r.reduction_4_jours) || 0,
+        reduction_5_jours: Number(r.reduction_5_jours) || 0,
       }))
     );
   } catch (err) {
@@ -291,22 +295,66 @@ async function createDemande(req, res, next) {
       return res.status(400).json({ message: 'Sélectionne au moins un service.' });
     }
 
-    const ids = [...new Set(services.map((s) => Number(s.id_service)).filter(Boolean))];
-    if (!ids.length) {
+    const requestedServices = services.map((service) => ({
+      id_service: Number(service?.id_service),
+      quantite: service?.quantite === undefined ? 1 : Number(service.quantite),
+    }));
+    if (
+      requestedServices.some(
+        (service) =>
+          !Number.isInteger(service.id_service) ||
+          service.id_service <= 0 ||
+          !Number.isInteger(service.quantite) ||
+          service.quantite < 1 ||
+          service.quantite > 5
+      )
+    ) {
       return res.status(400).json({ message: 'Services invalides.' });
+    }
+    const ids = requestedServices.map((service) => service.id_service);
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({ message: 'Chaque service ne peut être sélectionné qu’une seule fois.' });
     }
     const placeholders = ids.map(() => '?').join(',');
     const catalogue = await query(
-      `SELECT id_service, prix FROM services_ckoo
+      `SELECT id_service, nom, prix, unite, reduction_4_jours, reduction_5_jours
+       FROM services_ckoo
        WHERE id_service IN (${placeholders}) AND cle_service LIKE 'service\\_%' AND est_actif = 1`,
       ids
     );
-    const priceById = new Map(catalogue.map((r) => [Number(r.id_service), Number(r.prix) || 0]));
+    const serviceById = new Map(catalogue.map((row) => [Number(row.id_service), row]));
 
     const lignes = [];
-    for (const id of ids) {
-      if (!priceById.has(id)) continue;
-      lignes.push({ id_service: id, prix_unitaire: priceById.get(id) });
+    for (const requested of requestedServices) {
+      const service = serviceById.get(requested.id_service);
+      if (!service) continue;
+      if (service.unite !== 'jour' && requested.quantite !== 1) {
+        return res.status(400).json({
+          message: 'La quantité en jours est réservée aux services facturés à la journée.',
+        });
+      }
+
+      const reduction4Jours = Math.min(100, Math.max(0, Number(service.reduction_4_jours) || 0));
+      const reduction5Jours = Math.min(100, Math.max(0, Number(service.reduction_5_jours) || 0));
+      const reductionPourcentage = service.unite === 'jour'
+        ? requested.quantite >= 5
+          ? reduction5Jours
+          : requested.quantite >= 4
+            ? reduction4Jours
+            : 0
+        : 0;
+      const prixUnitaire = Number(service.prix) || 0;
+      const sousTotal = Math.round(
+        prixUnitaire * requested.quantite * (1 - reductionPourcentage / 100)
+      );
+      lignes.push({
+        id_service: requested.id_service,
+        nom: service.nom,
+        quantite: requested.quantite,
+        prix_unitaire: prixUnitaire,
+        reduction_pourcentage: reductionPourcentage,
+        sous_total: sousTotal,
+      });
     }
     if (!lignes.length) {
       return res.status(400).json({ message: 'Aucun service valide dans la demande.' });
@@ -317,13 +365,22 @@ async function createDemande(req, res, next) {
     for (const l of lignes) {
       await insertAndGetId(
         `INSERT INTO demandes_service
-           (reference, id_utilisateur, id_service, quantite, prix_unitaire, message, telephone)
-         VALUES (?, ?, ?, 1, ?, ?, ?)`,
-        [reference, userId, l.id_service, l.prix_unitaire, message, telephone]
+           (reference, id_utilisateur, id_service, quantite, prix_unitaire, reduction_pourcentage, message, telephone)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          reference,
+          userId,
+          l.id_service,
+          l.quantite,
+          l.prix_unitaire,
+          l.reduction_pourcentage,
+          message,
+          telephone,
+        ]
       );
     }
 
-    const total = lignes.reduce((sum, l) => sum + l.prix_unitaire, 0);
+    const total = lignes.reduce((sum, l) => sum + l.sous_total, 0);
 
     // ✅ Envoyer un email de confirmation au demandeur
     const [user] = await query(
@@ -336,7 +393,18 @@ async function createDemande(req, res, next) {
     }
 
     // ✅ Notifier le staff (admin + super_admin)
-    await notifyStaff(userId, lignes, reference, total);
+    await notify.notifyStaff({
+      titre: `Nouvelle demande de service ${reference}`,
+      texte: `Une demande de service d’un montant estimé de ${total.toLocaleString('fr-FR')} Ar a été envoyée.`,
+      lien: '/admin/services-coloc',
+      type: 'systeme',
+      details: [
+        ['Référence', reference],
+        ['Services', lignes.map((line) => `${line.nom} — ${line.quantite} × ${line.prix_unitaire} Ar${line.reduction_pourcentage ? ` (-${line.reduction_pourcentage} %)` : ''}`).join('<br>')],
+        ['Total estimé', `${total.toLocaleString('fr-FR')} Ar`],
+      ],
+      action: 'Consulter les demandes de service',
+    });
 
     res.status(201).json({
       reference,
@@ -358,7 +426,7 @@ async function listMine(req, res, next) {
 
     const rows = await query(
       `SELECT d.reference, d.statut, d.message, d.telephone, d.date_creation,
-              d.quantite, d.prix_unitaire, s.nom AS service_nom, s.unite,
+              d.quantite, d.prix_unitaire, d.reduction_pourcentage, s.nom AS service_nom, s.unite,
               d.dernier_contact, d.relance, d.synthese, d.rdv_date, d.rdv_note
        FROM demandes_service d
        JOIN services_ckoo s ON s.id_service = d.id_service
@@ -388,13 +456,17 @@ async function listMine(req, res, next) {
         });
       }
       const grp = byRef.get(r.reference);
-      const sousTotal = (Number(r.prix_unitaire) || 0) * (Number(r.quantite) || 1);
+      const quantite = Number(r.quantite) || 1;
+      const prixUnitaire = Number(r.prix_unitaire) || 0;
+      const reductionPourcentage = Number(r.reduction_pourcentage) || 0;
+      const sousTotal = Math.round(quantite * prixUnitaire * (1 - reductionPourcentage / 100));
       grp.total += sousTotal;
       grp.lignes.push({
         nom: r.service_nom,
         unite: r.unite,
-        quantite: Number(r.quantite) || 1,
-        prix_unitaire: Number(r.prix_unitaire) || 0,
+        quantite,
+        prix_unitaire: prixUnitaire,
+        reduction_pourcentage: reductionPourcentage,
         sous_total: sousTotal,
       });
     }
@@ -411,7 +483,7 @@ async function listForStaff(req, res, next) {
     await ensureTable();
     const rows = await query(
       `SELECT d.reference, d.statut, d.message, d.telephone, d.date_creation,
-              d.quantite, d.prix_unitaire, s.nom AS service_nom, s.unite,
+              d.quantite, d.prix_unitaire, d.reduction_pourcentage, s.nom AS service_nom, s.unite,
               d.id_utilisateur, u.nom AS user_nom, u.prenom AS user_prenom, u.email AS user_email,
               d.dernier_contact, d.relance, d.synthese, d.rdv_date, d.rdv_note
        FROM demandes_service d
@@ -445,7 +517,8 @@ async function listForStaff(req, res, next) {
       const grp = byRef.get(r.reference);
       const quantite = Number(r.quantite) || 1;
       const prixUnitaire = Number(r.prix_unitaire) || 0;
-      const sousTotal = quantite * prixUnitaire;
+      const reductionPourcentage = Number(r.reduction_pourcentage) || 0;
+      const sousTotal = Math.round(quantite * prixUnitaire * (1 - reductionPourcentage / 100));
       grp.total += sousTotal;
       grp.services.push(r.service_nom);
       grp.lignes.push({
@@ -453,6 +526,7 @@ async function listForStaff(req, res, next) {
         unite: r.unite,
         quantite,
         prix_unitaire: prixUnitaire,
+        reduction_pourcentage: reductionPourcentage,
         sous_total: sousTotal,
       });
     }

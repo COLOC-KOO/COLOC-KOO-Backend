@@ -4,7 +4,7 @@ dotenv.config();
 const { demarrerCronExpireJ7 } = require('./cron/expireJ7.cron');
 const { demarrerCronExpired } = require('./cron/expired.cron');
 const { createApp } = require('./app');
-const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema } = require('./Config/connectDatabase');
+const { testConnection, ensureUserProfileColumn, ensureBusinessSchema, ensurePartenaireRequestSchema, ensureServiceDiscountSchema } = require('./Config/connectDatabase');
 const { attachRealtime } = require('./Services/realtime.service');
 
 const PORT = process.env.PORT || 4000;
@@ -38,6 +38,7 @@ async function start() {
   await ensureUserProfileColumn();
   await ensureBusinessSchema();
   await ensurePartenaireRequestSchema();
+  await ensureServiceDiscountSchema();
 
   const server = await listenWithFallback(PORT);
   app.set('realtime', attachRealtime(server));
