@@ -5,6 +5,7 @@ const notify = require('../Services/notify.service');
 const { ensureBoosterSchema } = require('../Services/booster.service');
 const { matchAlertesPourAnnonce } = require('../Services/Alertes.matching.service');
 const journalService = require('../Services/journal.service');
+const { hasToliaraSearchAlias } = require('../Services/searchNormalization.service');
 
 // Récupère la liste des annonces filtrées
 async function list(req, res, next) {
@@ -61,14 +62,18 @@ async function list(req, res, next) {
       }
     }
     if (ville) {
+      const aliasPattern = hasToliaraSearchAlias(ville) ? '%toliara%' : null;
       clauses.push(`(
         LOWER(v.nom_ville) LIKE ?
+        ${aliasPattern ? 'OR LOWER(v.nom_ville) LIKE ?' : ''}
         OR LOWER(COALESCE(a.quartier, '')) LIKE ?
         OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
         OR LOWER(COALESCE(a.titre, '')) LIKE ?
       )`);
       const placeLike = `%${String(ville).toLowerCase()}%`;
-      values.push(placeLike, placeLike, placeLike, placeLike);
+      values.push(placeLike);
+      if (aliasPattern) values.push(aliasPattern);
+      values.push(placeLike, placeLike, placeLike);
     }
     if (quartier) {
       clauses.push(`(
@@ -87,15 +92,19 @@ async function list(req, res, next) {
       values.push(Number(maxPrice));
     }
     if (q) {
+      const aliasPattern = hasToliaraSearchAlias(q) ? '%toliara%' : null;
       clauses.push(`(
         LOWER(COALESCE(a.titre, '')) LIKE ?
         OR LOWER(COALESCE(a.description, '')) LIKE ?
         OR LOWER(v.nom_ville) LIKE ?
+        ${aliasPattern ? 'OR LOWER(v.nom_ville) LIKE ?' : ''}
         OR LOWER(COALESCE(a.quartier, '')) LIKE ?
         OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
       )`);
       const queryLike = `%${String(q).toLowerCase()}%`;
-      values.push(queryLike, queryLike, queryLike, queryLike, queryLike);
+      values.push(queryLike, queryLike, queryLike);
+      if (aliasPattern) values.push(aliasPattern);
+      values.push(queryLike, queryLike);
     }
     if (service) {
       const serviceId = Number(service);

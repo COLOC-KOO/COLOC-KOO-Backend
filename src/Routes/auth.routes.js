@@ -19,12 +19,12 @@ const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 router.post('/register', controller.register);
 router.post('/login', controller.login);
+router.get('/verify-email', controller.verifyEmail);
+router.post('/resend-verification-email', controller.resendVerificationEmail);
 router.get('/me', requireAuth, controller.me);
 router.patch('/me', requireAuth, controller.updateMe);
 router.post('/me/upload', requireAuth, upload.single('photo'), controller.uploadProfilePicture);
 router.patch('/me/password', requireAuth, controller.changePassword);
-// Affichage du mot de passe en clair : reservé au compte porteur du token.
-router.get('/me/password', requireAuth, controller.revealPassword);
 router.get('/me/security', requireAuth, controller.getSecuritySettings);
 router.patch('/me/security', requireAuth, controller.updateSecuritySettings);
 router.delete('/me', requireAuth, controller.deleteAccount);
@@ -39,6 +39,5 @@ router.get('/villes/:id', requireAuth, controller.getVilleById);
 router.get('/villes', requireAuth, controller.getVilles);
 
 module.exports = router;
-
 
 

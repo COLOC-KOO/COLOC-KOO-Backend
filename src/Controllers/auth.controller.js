@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { query, insertAndGetId } = require('../Services/db.service');
 const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
-const mail = require('../Services/mail.service');
+const emailVerification = require('../Services/emailVerification.service');
 const passwordVault = require('../Services/passwordVault.service');
 const { isMaintenanceMode, isStaffRole } = require('../Services/siteMaintenance.service');
 
@@ -119,6 +119,7 @@ function computeAge(birthDate) {
 
 async function register(req, res, next) {
   try {
+    await emailVerification.ensureSchema();
     if (isMaintenanceMode()) {
       return res.status(503).json({
         code: 'SITE_MAINTENANCE',
@@ -164,43 +165,18 @@ async function register(req, res, next) {
     const motDePasseChiffre = passwordVault.encrypt(mot_de_passe);
     const id = await insertAndGetId(
       `INSERT INTO utilisateurs
-       (email, telephone, cin, mot_de_passe, mot_de_passe_chiffre, nom, prenom, date_naissance, age, bio, profession, id_role)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (email, telephone, cin, mot_de_passe, mot_de_passe_chiffre, nom, prenom, date_naissance, age, bio, profession, id_role, email_verifie)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [email, telephone, cin, hash, motDePasseChiffre, nom, prenom, birthDateFormatted, age, bio, profession, roleId]
     );
-const user = await getUserById(id);
-    let token;
-    try {
-      const sessionId = await createSession(id, req);
-      token = signToken(user, sessionId);
-    } catch (sessionError) {
-      console.warn('[auth] Session non creee:', sessionError.message);
-      token = signToken(user);
-    }
-
-    res.status(201).json({ user, token });
-
-    // Envoi en arriere-plan : attendre le serveur SMTP bloquait la reponse
-    // (parfois plusieurs minutes) et laissait une page blanche a l'inscription.
-    Promise.resolve()
-      .then(() =>
-        mail.sendEmail(
-          email,
-          "Bienvenue sur Coloc'KOO",
-          mail.wrapLayout(
-            "Votre compte a ete cree",
-            `
-              <p>Bonjour ${prenom},</p>
-              <p>Votre compte Coloc'KOO est maintenant actif. Vous pouvez chercher une colocation, proposer un logement ou contacter les profils qui vous interessent.</p>
-              ${mail.actionButton('Acceder a mon compte', '/compte')}
-            `
-          ),
-          `Bonjour ${prenom}, votre compte Coloc'KOO a ete cree.`
-        )
-      )
-      .catch((error) => {
-        console.warn('[auth] Email de bienvenue non envoye:', error.message);
+    const emailSent = await emailVerification.createVerification(id, email, prenom);
+    if (!emailSent) {
+      return res.status(503).json({
+        code: 'EMAIL_VERIFICATION_EMAIL_FAILED',
+        message: "Le compte a été créé, mais l'e-mail de confirmation n'a pas pu être envoyé. Demande un nouvel envoi.",
       });
+    }
+    res.status(201).json({ email, message: 'Un lien de confirmation a été envoyé par e-mail.' });
   } catch (err) {
     console.error('❌ [REGISTER] Erreur:', err);
     next(err);
@@ -209,6 +185,7 @@ const user = await getUserById(id);
 
 async function login(req, res, next) {
   try {
+    await emailVerification.ensureSchema();
     const { email, mot_de_passe } = req.body;
     if (!email || !mot_de_passe) {
       return res.status(400).json({ message: 'Email et mot de passe requis.' });
@@ -231,6 +208,12 @@ async function login(req, res, next) {
     const ok = await bcrypt.compare(mot_de_passe, userRow.mot_de_passe);
     if (!ok) {
       return res.status(401).json({ message: 'Identifiants invalides.' });
+    }
+    if (!userRow.email_verifie) {
+      return res.status(403).json({
+        code: 'EMAIL_VERIFICATION_REQUIRED',
+        message: 'Confirme ton adresse e-mail avant de te connecter.',
+      });
     }
 
     if (isMaintenanceMode() && !isStaffRole(userRow.nom_role)) {
@@ -273,6 +256,56 @@ async function login(req, res, next) {
     console.log('🔍 [LOGIN] User connecté - age:', user.age, '| date_naissance:', user.date_naissance);
 
     res.json({ user, token });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function verifyEmail(req, res, next) {
+  try {
+    const verified = await emailVerification.verifyToken(req.query.token);
+    if (!verified) {
+      return res.status(400).json({
+        code: 'EMAIL_VERIFICATION_INVALID',
+        message: 'Ce lien de confirmation est invalide ou a expiré.',
+      });
+    }
+    res.json({ message: 'Adresse e-mail confirmée.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function resendVerificationEmail(req, res, next) {
+  try {
+    await emailVerification.ensureSchema();
+    const email = String(req.body?.email || '').trim();
+    if (!email) return res.status(400).json({ message: 'Adresse e-mail requise.' });
+
+    const rows = await query(
+      `SELECT u.id_utilisateur, u.email, u.prenom, u.email_verifie, v.created_at
+       FROM utilisateurs u
+       LEFT JOIN email_verifications v ON v.id_utilisateur = u.id_utilisateur
+       WHERE u.email = ?
+       LIMIT 1`,
+      [email]
+    );
+    if (!rows.length || rows[0].email_verifie) {
+      return res.json({ message: 'Si un compte est en attente de confirmation, un nouvel e-mail sera envoyé.' });
+    }
+    if (rows[0].created_at && Date.now() - new Date(rows[0].created_at).getTime() < 60_000) {
+      return res.json({ message: 'Un e-mail de confirmation vient d’être envoyé. Vérifie ta boîte de réception.' });
+    }
+
+    const sent = await emailVerification.createVerification(
+      rows[0].id_utilisateur,
+      rows[0].email,
+      rows[0].prenom
+    );
+    if (!sent) {
+      return res.status(503).json({ message: "L'e-mail n'a pas pu être envoyé. Réessaie plus tard." });
+    }
+    res.json({ message: 'Un nouvel e-mail de confirmation a été envoyé.' });
   } catch (err) {
     next(err);
   }
@@ -396,40 +429,6 @@ async function changePassword(req, res, next) {
       [hash, motDePasseChiffre, req.user.id]
     );
     res.json({ message: 'Mot de passe mis a jour.' });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
- * Renvoie le mot de passe en clair du compte connecte.
- *
- * `req.user.id` vient du JWT verifie par requireAuth : la requete ne peut donc
- * porter que sur le compte du porteur du token, jamais sur celui d'un autre
- * utilisateur (aucun id n'est accepte depuis le client).
- */
-async function revealPassword(req, res, next) {
-  try {
-    const rows = await query(
-      'SELECT mot_de_passe_chiffre FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1',
-      [req.user.id]
-    );
-    if (rows.length === 0) {
-      return res.status(404).json({ message: 'Utilisateur introuvable.' });
-    }
-
-    const motDePasse = passwordVault.decrypt(rows[0].mot_de_passe_chiffre);
-    if (!motDePasse) {
-      // Compte cree avant le coffre (ou cle absente) : rien a afficher tant que
-      // l'utilisateur ne s'est pas reconnecte ou n'a pas change son mot de passe.
-      return res.status(404).json({
-        message: "Mot de passe indisponible. Reconnecte-toi pour pouvoir l'afficher.",
-      });
-    }
-
-    // Jamais de cache intermediaire pour une reponse de ce type.
-    res.set('Cache-Control', 'no-store');
-    res.json({ mot_de_passe: motDePasse });
   } catch (err) {
     next(err);
   }
@@ -613,11 +612,12 @@ async function getVilleById(req, res, next) {
 module.exports = {
   register,
   login,
+  verifyEmail,
+  resendVerificationEmail,
   me,
   updateMe,
   uploadProfilePicture,
   changePassword,
-  revealPassword,
   getSecuritySettings,
   updateSecuritySettings,
   deleteAccount,
