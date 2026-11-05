@@ -157,16 +157,31 @@ async function listMine(req, res, next) {
 
 async function listAll(req, res, next) {
   try {
+    const { startDate, endDate } = req.query;
+    const validDate = (value) => {
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const parsed = new Date(`${value}T00:00:00.000Z`);
+      return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+    };
+    if ((startDate || endDate) && (!validDate(startDate) || !validDate(endDate) || startDate > endDate)) {
+      return res.status(400).json({ message: 'Période invalide.' });
+    }
+    const dateFilter = startDate && endDate ? 'WHERE DATE(c.date_creation) BETWEEN ? AND ?' : '';
+    const params = startDate && endDate ? [startDate, endDate] : [];
     const rows = await query(
       `
       SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
-             a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer
+             a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer,
+             u.nom, u.prenom, u.email, u.telephone, u.profile_picture
       FROM candidatures c
       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
       LEFT JOIN chambres ch ON ch.id_annonce = a.id_annonce
+      LEFT JOIN utilisateurs u ON u.id_utilisateur = c.id_utilisateur
+      ${dateFilter}
       ORDER BY c.date_creation DESC
-      LIMIT 500
-      `
+      LIMIT ${dateFilter ? 2000 : 500}
+      `,
+      params
     );
 
     const ids = rows.map(row => row.id_candidature);

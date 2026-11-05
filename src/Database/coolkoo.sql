@@ -525,6 +525,8 @@
     `ville_origine` int(11) DEFAULT NULL,
     `profession` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `est_verifie` tinyint(1) NOT NULL DEFAULT '0',
+    `statut_verification` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'a_verifier',
+    `motif_verification` text COLLATE utf8mb4_unicode_ci,
     `statut` enum('active','inactive','suspended','banned') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
     `date_suspension_fin` datetime DEFAULT NULL,
     `date_inscription` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,

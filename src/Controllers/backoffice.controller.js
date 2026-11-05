@@ -1,9 +1,10 @@
 ﻿const bcrypt = require('bcryptjs');
-const { query, insertAndGetId } = require('../Services/db.service');
+const { query, insertAndGetId, withTransaction } = require('../Services/db.service');
 const { mapAnnonceRow, mapUserRow } = require('../Services/mappers');
 const { ensureBoosterSchema, normalizeBoosterPayload } = require('../Services/booster.service');
 const { insertInApp } = require('../Services/notify.service');
 const { normalizeRole } = require('../Middleware/auth.middleware');
+const journalService = require('../Services/journal.service');
 
 const WARNING_REASONS = [
   'Renseignements manquants',
@@ -62,41 +63,116 @@ async function ensureBackofficeSchema() {
   await query("ALTER TABLE candidatures MODIFY COLUMN statut ENUM('envoyee','recu','dossier','signature','convention','en_attente','acceptee','refusee','constituee') NOT NULL DEFAULT 'envoyee'").catch(() => {});
 }
 
+let memberVerificationSchemaPromise;
+async function ensureMemberVerificationSchema() {
+  if (!memberVerificationSchemaPromise) {
+    memberVerificationSchemaPromise = (async () => {
+      const statusColumn = await query(
+        'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        ['utilisateurs', 'statut_verification']
+      );
+      if (!statusColumn.length) {
+        await query("ALTER TABLE utilisateurs ADD COLUMN statut_verification VARCHAR(30) NOT NULL DEFAULT 'a_verifier'");
+        await query("UPDATE utilisateurs SET statut_verification = CASE WHEN est_verifie = 1 THEN 'conforme' ELSE 'a_verifier' END");
+      }
+      const reasonColumn = await query(
+        'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        ['utilisateurs', 'motif_verification']
+      );
+      if (!reasonColumn.length) {
+        await query('ALTER TABLE utilisateurs ADD COLUMN motif_verification TEXT NULL');
+      }
+      await query(
+        "UPDATE utilisateurs SET statut_verification = 'conforme' WHERE est_verifie = 1 AND statut_verification = 'a_verifier'"
+      );
+    })();
+  }
+  try {
+    await memberVerificationSchemaPromise;
+  } catch (err) {
+    memberVerificationSchemaPromise = undefined;
+    throw err;
+  }
+}
+
 async function logAction(req, action, cibleType, cibleId, details = null) {
   await ensureBackofficeSchema();
-  await query(
-    `INSERT INTO journal_actions (id_utilisateur, action, cible_type, cible_id, details)
-     VALUES (?, ?, ?, ?, ?)`,
-    [actorId(req), action, cibleType, cibleId || null, details ? JSON.stringify(details) : null]
-  );
+  await journalService.logAction(actorId(req), action, cibleType, cibleId, details);
+}
+
+function validDateOnly(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function shiftDate(value, days) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 async function dashboard(req, res, next) {
   try {
-    const [queue, validated, members, month, rate, reports, candidates, contracts, payments] = await Promise.all([
+    const today = new Date().toISOString().slice(0, 10);
+    const startDate = req.query.startDate || `${today.slice(0, 7)}-01`;
+    const endDate = req.query.endDate || today;
+    if (!validDateOnly(startDate) || !validDateOnly(endDate) || startDate > endDate) {
+      return res.status(400).json({ message: 'Période invalide.' });
+    }
+    const dayCount = Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000) + 1;
+    const previousEnd = shiftDate(startDate, -1);
+    const previousStart = shiftDate(previousEnd, -(dayCount - 1));
+    const ranges = [
+      { start: startDate, end: endDate },
+      { start: previousStart, end: previousEnd },
+    ];
+    const [listings, applications, members, revenues, queue, reports] = await Promise.all([
+      Promise.all(ranges.map(({ start, end }) => query(
+        `SELECT COUNT(*) AS n FROM annonces
+         WHERE statut = 'active' AND DATE(COALESCE(date_publication, date_creation)) BETWEEN ? AND ?`,
+        [start, end]
+      ))),
+      Promise.all(ranges.map(({ start, end }) => query(
+        'SELECT COUNT(*) AS n FROM candidatures WHERE DATE(date_creation) BETWEEN ? AND ?',
+        [start, end]
+      ))),
+      Promise.all(ranges.map(({ start, end }) => query(
+        "SELECT COUNT(*) AS n FROM utilisateurs WHERE statut = 'active' AND DATE(date_inscription) BETWEEN ? AND ?",
+        [start, end]
+      ))),
+      Promise.all(ranges.map(({ start, end }) => query(
+        `SELECT COALESCE(SUM(montant_recu), 0) AS n FROM paiements
+         WHERE DATE(date_paiement) BETWEEN ? AND ? AND statut IN ('conforme','valide')`,
+        [start, end]
+      ))),
       query("SELECT COUNT(*) AS n FROM annonces WHERE statut = 'pending'"),
-      query("SELECT COUNT(*) AS n FROM annonces WHERE statut = 'active' AND DATE(date_publication) = CURDATE()"),
-      query("SELECT COUNT(*) AS n FROM utilisateurs WHERE statut = 'active'"),
-      query("SELECT COUNT(*) AS n FROM annonces WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
-      query("SELECT ROUND(100 * SUM(CASE WHEN statut = 'active' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) AS n FROM annonces"),
       query("SELECT COUNT(*) AS n FROM signalements WHERE statut IN ('new','in_progress')"),
-      query("SELECT COUNT(*) AS n FROM candidatures WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
-      query("SELECT COUNT(*) AS n FROM contrats WHERE MONTH(date_creation) = MONTH(CURDATE()) AND YEAR(date_creation) = YEAR(CURDATE())"),
-      query("SELECT COALESCE(SUM(montant_recu), 0) AS n FROM paiements WHERE MONTH(date_paiement) = MONTH(CURDATE()) AND YEAR(date_paiement) = YEAR(CURDATE()) AND statut IN ('conforme','valide')"),
     ]);
 
+    const amount = (rows) => Number(rows[0]?.n || 0);
+
     res.json({
-      annoncesFile: Number(queue[0]?.n || 0),
-      validationsAujourdhui: Number(validated[0]?.n || 0),
-      signalements: Number(reports[0]?.n || 0),
-      membresActifs: Number(members[0]?.n || 0),
-      annoncesMois: Number(month[0]?.n || 0),
-      tauxValidation: Number(rate[0]?.n || 0),
-      candidaturesMois: Number(candidates[0]?.n || 0),
-      contratsMois: Number(contracts[0]?.n || 0),
-      chiffreAffairesMois: Number(payments[0]?.n || 0),
-      objectifJour: 30,
-      progressObjectif: Math.min(100, Math.round((Number(validated[0]?.n || 0) / 30) * 100)),
+      startDate,
+      endDate,
+      previousStartDate: previousStart,
+      previousEndDate: previousEnd,
+      annoncesFile: amount(queue),
+      signalements: amount(reports),
+      annoncesMois: amount(listings[0]),
+      candidaturesMois: amount(applications[0]),
+      membresActifs: amount(members[0]),
+      chiffreAffairesMois: amount(revenues[0]),
+      comparaison: {
+        annonces: amount(listings[0]) - amount(listings[1]),
+        candidatures: amount(applications[0]) - amount(applications[1]),
+        membres: amount(members[0]) - amount(members[1]),
+        revenus: amount(revenues[0]) - amount(revenues[1]),
+        annoncesPrecedentes: amount(listings[1]),
+        candidaturesPrecedentes: amount(applications[1]),
+        membresPrecedents: amount(members[1]),
+        revenusPrecedents: amount(revenues[1]),
+      },
     });
   } catch (err) {
     next(err);
@@ -165,6 +241,7 @@ function splitFullName(fullName) {
 
 async function members(req, res, next) {
   try {
+    await ensureMemberVerificationSchema();
     const { role, q, statut } = req.query;
     const roleMap = {
       locataires: 'coloc',
@@ -212,6 +289,8 @@ async function members(req, res, next) {
     );
     res.json(rows.map(row => ({
       ...mapUserRow(row),
+      verificationStatus: row.statut_verification,
+      verificationReason: row.motif_verification,
       annoncesCount: Number(row.annonces_count || 0),
       candidaturesCount: Number(row.candidatures_count || 0),
       signalementsCount: Number(row.signalements_count || 0),
@@ -352,12 +431,77 @@ async function moderateAnnonce(req, res, next) {
       return res.status(400).json({ message: 'Statut invalide.' });
     }
     const publicationSql = statut === 'active' ? ', date_publication = COALESCE(date_publication, NOW())' : '';
-    await query(
-      `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
-      [statut, req.params.id]
-    );
-    await logAction(req, statut === 'active' ? 'Validation' : statut === 'rejected' ? 'Rejet' : 'Correction', 'annonce', req.params.id, { statut });
-    res.json({ message: 'Annonce mise a jour.' });
+    const action = statut === 'active' ? 'Validation' : statut === 'rejected' ? 'Rejet' : 'Correction';
+    await journalService.ensureJournalSchema();
+    const moderation = await withTransaction(async (tx) => {
+      const [current] = await tx('SELECT statut FROM annonces WHERE id_annonce = ? FOR UPDATE', [req.params.id]);
+      if (!current) return { missing: true, changed: false };
+      if (current.statut === statut) return { missing: false, changed: false };
+      await tx(
+        `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
+        [statut, req.params.id]
+      );
+      await journalService.insertJournalAction(tx, actorId(req), action, 'annonce', req.params.id, {
+        ancien_statut: current.statut,
+        statut,
+      });
+      return { missing: false, changed: true };
+    });
+    if (moderation.missing) return res.status(404).json({ message: 'Annonce introuvable.' });
+    res.json({
+      message: moderation.changed ? 'Annonce mise a jour.' : 'Le statut de l’annonce est déjà à jour.',
+      changed: moderation.changed,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function moderateMemberVerification(req, res, next) {
+  try {
+    await ensureMemberVerificationSchema();
+    const statut = String(req.body.statut || '');
+    const raison = String(req.body.raison || '').trim();
+    if (!['a_verifier', 'conforme', 'non_conforme'].includes(statut)) {
+      return res.status(400).json({ message: 'Statut de vérification invalide.' });
+    }
+    if (statut === 'non_conforme' && !raison) {
+      return res.status(400).json({ message: 'Un motif est requis pour refuser le profil.' });
+    }
+    const action = statut === 'conforme' ? 'Validation' : statut === 'non_conforme' ? 'Rejet' : 'Correction';
+    await journalService.ensureJournalSchema();
+    const result = await withTransaction(async (tx) => {
+      const [member] = await tx(
+        'SELECT id_utilisateur, statut_verification, motif_verification FROM utilisateurs WHERE id_utilisateur = ? FOR UPDATE',
+        [req.params.id]
+      );
+      if (!member) return { missing: true, changed: false };
+      if (member.statut_verification === statut && (statut !== 'non_conforme' || raison === String(member.motif_verification || '').trim())) {
+        return { missing: false, changed: false };
+      }
+      await tx(
+        `UPDATE utilisateurs
+         SET statut_verification = ?, est_verifie = ?, motif_verification = ?
+         WHERE id_utilisateur = ?`,
+        [statut, statut === 'conforme' ? 1 : 0, statut === 'non_conforme' ? raison : null, req.params.id]
+      );
+      await journalService.insertJournalAction(
+        tx,
+        actorId(req),
+        action,
+        'profil',
+        req.params.id,
+        { statut, raison: statut === 'non_conforme' ? raison : null }
+      );
+      return { missing: false, changed: true };
+    });
+    if (result.missing) return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    res.json({
+      message: result.changed ? 'Vérification du profil mise à jour.' : 'Le statut de vérification est déjà à jour.',
+      changed: result.changed,
+      statut,
+      raison: statut === 'non_conforme' ? raison : null,
+    });
   } catch (err) {
     next(err);
   }
@@ -476,7 +620,7 @@ async function signalementConversation(req, res, next) {
 
 async function updateSignalement(req, res, next) {
   try {
-    const { statut = 'resolved', action, raison } = req.body;
+    const { statut, action, raison } = req.body;
     const normalizedStatus = ['new', 'in_progress', 'resolved', 'dismissed'].includes(statut)
       ? statut
       : action === 'dismiss'
@@ -486,12 +630,28 @@ async function updateSignalement(req, res, next) {
           : action === 'resolve'
             ? 'resolved'
             : 'resolved';
-    await query(
-      'UPDATE signalements SET statut = ?, date_resolution = IF(? IN ("resolved","dismissed"), NOW(), date_resolution) WHERE id_signalement = ?',
-      [normalizedStatus, normalizedStatus, req.params.id]
-    );
-    await logAction(req, action === 'dismiss' ? 'Classement sans suite' : action === 'warn' ? 'Avertissement' : action === 'resolve' ? 'Resolution' : 'Correction', 'signalement', req.params.id, { statut: normalizedStatus, raison });
-    res.json({ message: 'Signalement mis a jour.' });
+    const actionName = action === 'dismiss' ? 'Classement sans suite' : action === 'warn' ? 'Avertissement' : action === 'resolve' ? 'Resolution' : 'Correction';
+    await journalService.ensureJournalSchema();
+    const result = await withTransaction(async (tx) => {
+      const [current] = await tx('SELECT statut FROM signalements WHERE id_signalement = ? FOR UPDATE', [req.params.id]);
+      if (!current) return { missing: true, changed: false };
+      if (current.statut === normalizedStatus) return { missing: false, changed: false };
+      await tx(
+        'UPDATE signalements SET statut = ?, date_resolution = IF(? IN ("resolved","dismissed"), NOW(), date_resolution) WHERE id_signalement = ?',
+        [normalizedStatus, normalizedStatus, req.params.id]
+      );
+      await journalService.insertJournalAction(tx, actorId(req), actionName, 'signalement', req.params.id, {
+        ancien_statut: current.statut,
+        statut: normalizedStatus,
+        raison,
+      });
+      return { missing: false, changed: true };
+    });
+    if (result.missing) return res.status(404).json({ message: 'Signalement introuvable.' });
+    res.json({
+      message: result.changed ? 'Signalement mis a jour.' : 'Le signalement est déjà dans ce statut.',
+      changed: result.changed,
+    });
   } catch (err) {
     next(err);
   }
@@ -1302,6 +1462,7 @@ module.exports = {
   stats,
   moderateAnnonce,
   moderateMember,
+  moderateMemberVerification,
   signalements,
   signalementConversation,
   updateSignalement,
@@ -1347,4 +1508,3 @@ module.exports = {
   deleteMember,
   saveObjectif,
 };
-

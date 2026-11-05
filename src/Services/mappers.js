@@ -22,6 +22,8 @@
     villeOrigine: row.ville_origine_nom || row.ville_origine,
     languePreferee: row.langue_preferee,
     verification: Boolean(row.est_verifie),
+    verificationStatus: row.est_verifie ? 'conforme' : (row.statut_verification || 'a_verifier'),
+    verificationReason: row.motif_verification || null,
     statut: row.statut,
     createdAt: row.date_inscription,
     rgpd_analytics: Number(row.rgpd_analytics ?? 0),
@@ -160,4 +162,3 @@ module.exports = {
   parseJsonMaybe,
   toPublicRole,
 };
-
