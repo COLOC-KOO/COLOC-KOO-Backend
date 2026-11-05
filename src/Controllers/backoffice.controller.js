@@ -5,6 +5,10 @@ const { ensureBoosterSchema, normalizeBoosterPayload } = require('../Services/bo
 const { insertInApp } = require('../Services/notify.service');
 const { normalizeRole } = require('../Middleware/auth.middleware');
 const journalService = require('../Services/journal.service');
+const {
+  setMaintenanceMode: persistMaintenanceMode,
+  MAINTENANCE_CONFIG_KEY,
+} = require('../Services/siteMaintenance.service');
 
 let partnerPricingSchemaPromise;
 async function ensurePartnerPricingSchema() {
@@ -1558,12 +1562,35 @@ async function saveConfiguration(req, res, next) {
     await ensureBackofficeSchema();
     const { cle, valeur } = req.body;
     if (!cle) return res.status(400).json({ message: 'Cle requise.' });
+    if (cle === MAINTENANCE_CONFIG_KEY) {
+      return res.status(403).json({ message: 'Utilisez le contrôle dédié au super-administrateur pour modifier le mode maintenance.' });
+    }
     await query(
       'INSERT INTO configuration_backoffice (cle, valeur) VALUES (?, ?) ON DUPLICATE KEY UPDATE valeur = VALUES(valeur), date_modification = NOW()',
       [cle, JSON.stringify(valeur ?? null)]
     );
     await logAction(req, 'Correction', 'configuration', null, { cle });
     res.json({ message: 'Configuration enregistree.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateMaintenanceMode(req, res, next) {
+  try {
+    const { maintenanceMode } = req.body;
+    if (typeof maintenanceMode !== 'boolean') {
+      return res.status(400).json({ message: 'Le mode maintenance doit être activé ou désactivé.' });
+    }
+
+    await persistMaintenanceMode(maintenanceMode);
+    await logAction(req, maintenanceMode ? 'Activation maintenance' : 'Désactivation maintenance', 'site', null, {
+      maintenanceMode,
+    });
+    res.json({
+      maintenanceMode,
+      message: maintenanceMode ? 'Mode maintenance activé.' : 'Mode maintenance désactivé.',
+    });
   } catch (err) {
     next(err);
   }
@@ -1635,6 +1662,7 @@ module.exports = {
   administration,
   backofficePerformance,
   saveConfiguration,
+  updateMaintenanceMode,
   createMember,
   updateMember,
   deleteMember,

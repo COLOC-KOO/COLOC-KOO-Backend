@@ -5,7 +5,7 @@ const { signToken } = require('../Services/token.service');
 const { mapUserRow } = require('../Services/mappers');
 const emailVerification = require('../Services/emailVerification.service');
 const passwordVault = require('../Services/passwordVault.service');
-const { isMaintenanceMode, isStaffRole } = require('../Services/siteMaintenance.service');
+const { getMaintenanceMode, isStaffRole } = require('../Services/siteMaintenance.service');
 
 const ROLE_ALIASES = {
   superadmin: 'super_admin',
@@ -120,12 +120,13 @@ function computeAge(birthDate) {
 async function register(req, res, next) {
   try {
     await emailVerification.ensureSchema();
-    if (isMaintenanceMode()) {
+    if (await getMaintenanceMode()) {
       return res.status(503).json({
         code: 'SITE_MAINTENANCE',
         message: 'La création de comptes est temporairement suspendue pendant la maintenance du site.',
       });
     }
+    await passwordVault.ensureSchema();
 
     const {
       email,
@@ -186,6 +187,7 @@ async function register(req, res, next) {
 async function login(req, res, next) {
   try {
     await emailVerification.ensureSchema();
+    await passwordVault.ensureSchema();
     const { email, mot_de_passe } = req.body;
     if (!email || !mot_de_passe) {
       return res.status(400).json({ message: 'Email et mot de passe requis.' });
@@ -216,7 +218,7 @@ async function login(req, res, next) {
       });
     }
 
-    if (isMaintenanceMode() && !isStaffRole(userRow.nom_role)) {
+    if (await getMaintenanceMode() && !isStaffRole(userRow.nom_role)) {
       return res.status(503).json({
         code: 'SITE_MAINTENANCE',
         message: 'La connexion est temporairement réservée à l’équipe autorisée pendant la maintenance du site.',
@@ -407,6 +409,7 @@ async function uploadProfilePicture(req, res, next) {
 
 async function changePassword(req, res, next) {
   try {
+    await passwordVault.ensureSchema();
     const { mot_de_passe_actuel, nouveau_mot_de_passe } = req.body;
     if (!mot_de_passe_actuel || !nouveau_mot_de_passe) {
       return res.status(400).json({ message: 'Mot de passe actuel et nouveau mot de passe requis.' });

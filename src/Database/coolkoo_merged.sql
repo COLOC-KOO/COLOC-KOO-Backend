@@ -557,6 +557,7 @@
     `email` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
     `telephone` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `mot_de_passe` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+    `mot_de_passe_chiffre` text COLLATE utf8mb4_unicode_ci DEFAULT NULL,
     `nom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
     `prenom` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
     `age` int(3) DEFAULT NULL,

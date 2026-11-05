@@ -67,6 +67,7 @@ router.get('/partenaires/stats', controller.partenairesStats);
 router.get('/paiements', controller.backofficePaiements);
 router.get('/administration', controller.administration);
 router.get('/performance', controller.backofficePerformance);
+router.patch('/maintenance-mode', requireRole('super_admin'), controller.updateMaintenanceMode);
 router.post('/administration/configuration', controller.saveConfiguration);
 router.post('/administration/objectifs', controller.saveObjectif);
 router.patch('/administration/objectifs/:id', controller.saveObjectif);

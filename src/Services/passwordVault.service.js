@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { query } = require('./db.service');
 
 /**
  * Coffre a mots de passe.
@@ -18,6 +19,25 @@ const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits, taille recommandee pour GCM
 const KEY_LENGTH = 32; // 256 bits
+let schemaPromise;
+
+async function ensureSchema() {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      const columns = await query(
+        'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        ['utilisateurs', 'mot_de_passe_chiffre']
+      );
+      if (!columns.length) {
+        await query('ALTER TABLE utilisateurs ADD COLUMN mot_de_passe_chiffre TEXT NULL DEFAULT NULL');
+      }
+    })().catch((error) => {
+      schemaPromise = undefined;
+      throw error;
+    });
+  }
+  await schemaPromise;
+}
 
 function getKey() {
   const raw = process.env.PASSWORD_VAULT_KEY;
@@ -76,4 +96,4 @@ function decrypt(stored) {
   }
 }
 
-module.exports = { encrypt, decrypt, isEnabled };
+module.exports = { encrypt, decrypt, isEnabled, ensureSchema };
