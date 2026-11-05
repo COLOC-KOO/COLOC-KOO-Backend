@@ -80,6 +80,36 @@ async function ensurePartenaireRequestSchema() {
   }
 }
 
+async function ensureServiceDiscountSchema() {
+  const dbPool = await initPool();
+  const columnsByTable = {
+    services_ckoo: [
+      { name: 'reduction_4_jours', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
+      { name: 'reduction_5_jours', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
+    ],
+    demandes_service: [
+      { name: 'reduction_pourcentage', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
+    ],
+  };
+
+  for (const [table, columns] of Object.entries(columnsByTable)) {
+    const [existingTable] = await dbPool.query('SHOW TABLES LIKE ?', [table]);
+    if (existingTable.length === 0) continue;
+
+    for (const column of columns) {
+      const [existingColumn] = await dbPool.query(
+        `SHOW COLUMNS FROM \`${table}\` LIKE ?`,
+        [column.name]
+      );
+      if (existingColumn.length === 0) {
+        await dbPool.query(
+          `ALTER TABLE \`${table}\` ADD COLUMN \`${column.name}\` ${column.definition}`
+        );
+      }
+    }
+  }
+}
+
 async function ensureAnnonceEquipmentSchema() {
   const dbPool = await initPool();
   const tables = [
@@ -228,4 +258,5 @@ module.exports = {
   ensureUserProfileColumn,
   ensureBusinessSchema,
   ensurePartenaireRequestSchema,
+  ensureServiceDiscountSchema,
 };

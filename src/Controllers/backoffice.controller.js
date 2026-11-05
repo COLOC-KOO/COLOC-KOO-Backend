@@ -660,11 +660,38 @@ async function servicesCkoo(req, res, next) {
 
 async function createServiceCkoo(req, res, next) {
   try {
-    const { cle_service, nom, description, prix, unite = 'heure', est_actif = 1 } = req.body;
+    const {
+      cle_service,
+      nom,
+      description,
+      prix,
+      unite = 'heure',
+      est_actif = 1,
+      reduction_4_jours = 0,
+      reduction_5_jours = 0,
+    } = req.body;
     if (!nom) return res.status(400).json({ message: 'Nom requis.' });
+    const reductions = [Number(reduction_4_jours), Number(reduction_5_jours)];
+    if (reductions.some((reduction) => !Number.isFinite(reduction) || reduction < 0 || reduction > 100)) {
+      return res.status(400).json({ message: 'Les réductions doivent être comprises entre 0 et 100 %.' });
+    }
+    if (reductions[1] < reductions[0]) {
+      return res.status(400).json({ message: 'La réduction dès 5 jours doit être au moins égale à celle dès 4 jours.' });
+    }
     const id = await insertAndGetId(
-      'INSERT INTO services_ckoo (cle_service, nom, description, prix, unite, est_actif) VALUES (?, ?, ?, ?, ?, ?)',
-      [cle_service || `service_${Date.now()}`, nom, description || null, prix || 0, unite, est_actif ? 1 : 0]
+      `INSERT INTO services_ckoo
+         (cle_service, nom, description, prix, unite, est_actif, reduction_4_jours, reduction_5_jours)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        cle_service || `service_${Date.now()}`,
+        nom,
+        description || null,
+        prix || 0,
+        unite,
+        est_actif ? 1 : 0,
+        reductions[0],
+        reductions[1],
+      ]
     );
     await logAction(req, 'Correction', 'service_ckoo', id, { operation: 'creation' });
     res.status(201).json({ id_service: id });
@@ -675,7 +702,43 @@ async function createServiceCkoo(req, res, next) {
 
 async function updateServiceCkoo(req, res, next) {
   try {
-    const allowed = ['cle_service', 'nom', 'description', 'prix', 'unite', 'est_actif'];
+    const allowed = [
+      'cle_service',
+      'nom',
+      'description',
+      'prix',
+      'unite',
+      'est_actif',
+      'reduction_4_jours',
+      'reduction_5_jours',
+    ];
+    for (const key of ['reduction_4_jours', 'reduction_5_jours']) {
+      if (req.body[key] !== undefined) {
+        const reduction = Number(req.body[key]);
+        if (!Number.isFinite(reduction) || reduction < 0 || reduction > 100) {
+          return res.status(400).json({ message: 'Les réductions doivent être comprises entre 0 et 100 %.' });
+        }
+        req.body[key] = reduction;
+      }
+    }
+    if (req.body.reduction_4_jours !== undefined || req.body.reduction_5_jours !== undefined) {
+      const [currentService] = await query(
+        'SELECT reduction_4_jours, reduction_5_jours FROM services_ckoo WHERE id_service = ?',
+        [req.params.id]
+      );
+      if (!currentService) return res.status(404).json({ message: 'Service introuvable.' });
+      const reduction4Jours = Number(
+        req.body.reduction_4_jours ?? currentService.reduction_4_jours
+      );
+      const reduction5Jours = Number(
+        req.body.reduction_5_jours ?? currentService.reduction_5_jours
+      );
+      if (reduction5Jours < reduction4Jours) {
+        return res.status(400).json({
+          message: 'La réduction dès 5 jours doit être au moins égale à celle dès 4 jours.',
+        });
+      }
+    }
     const sets = [];
     const values = [];
     for (const key of allowed) {
@@ -1347,4 +1410,3 @@ module.exports = {
   deleteMember,
   saveObjectif,
 };
-
