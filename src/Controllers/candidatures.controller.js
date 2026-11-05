@@ -1,4 +1,5 @@
 const { query, insertAndGetId } = require('../Services/db.service');
+const { normalizeCitySearchTerm } = require('../Services/searchNormalization.service');
 const {
   ensureAcceptedColocDiscussionGroup,
   notifyAcceptedColocGroup,
@@ -212,9 +213,10 @@ async function listProfilsParVille(req, res, next) {
       return res.status(400).json({ message: 'Ville requise.' });
     }
 
-    await rememberSearchLocation(req.user?.id, ville);
+    const villeNormalisee = normalizeCitySearchTerm(ville);
+    await rememberSearchLocation(req.user?.id, villeNormalisee);
 
-    const placeLike = `%${ville.toLowerCase()}%`;
+    const placeLike = `%${villeNormalisee}%`;
     const roleClause = requestedRoles.length > 0 && !includeAllRoles
       ? ` AND LOWER(r.nom_role) IN (${requestedRoles.map(() => '?').join(',')})`
       : '';

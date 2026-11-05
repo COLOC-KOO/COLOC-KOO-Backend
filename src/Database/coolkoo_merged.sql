@@ -572,8 +572,18 @@
     `date_inscription` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `derniere_connexion` datetime DEFAULT NULL,
     `langue_preferee` int(11) DEFAULT '1',
+    `email_verifie` tinyint(1) NOT NULL DEFAULT '1',
     `navigation_light` tinyint(1) NOT NULL DEFAULT '0',
     `id_role` int(11) NOT NULL DEFAULT '1'
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+  CREATE TABLE `email_verifications` (
+    `id_utilisateur` int(11) NOT NULL,
+    `token_hash` char(64) NOT NULL,
+    `expires_at` datetime NOT NULL,
+    `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id_utilisateur`),
+    KEY `idx_email_verifications_token` (`token_hash`)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
   --
