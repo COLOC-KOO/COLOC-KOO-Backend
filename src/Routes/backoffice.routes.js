@@ -76,8 +76,8 @@ router.delete('/membres/:id', controller.deleteMember);
 router.patch('/annonces/:id/status', controller.moderateAnnonce);
 router.patch('/paiements/:id/status', controller.updatePaiementStatus);
 router.patch('/members/:id/status', controller.moderateMember);
+router.patch('/membres/:id/verification', controller.moderateMemberVerification);
 // ===== ROUTES DES CAMPAGNES =====
 router.use('/campagnes', campagnesRoutes);
 
 module.exports = router;
-

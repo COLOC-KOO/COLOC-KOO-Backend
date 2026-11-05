@@ -4,14 +4,27 @@ const { mapAnnonceRow, hydrateAnnonce } = require('../Services/mappers');
 const notify = require('../Services/notify.service');
 const { ensureBoosterSchema } = require('../Services/booster.service');
 const { matchAlertesPourAnnonce } = require('../Services/Alertes.matching.service');
+const journalService = require('../Services/journal.service');
 
 // Récupère la liste des annonces filtrées
 async function list(req, res, next) {
   try {
     await ensureBoosterSchema();
-    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service, coloc } = req.query;
+    const { q, type, ville, quartier, minPrice, maxPrice, statut: rawStatut = 'active', mine, service, coloc, startDate, endDate } = req.query;
     const clauses = [];
     const values = [];
+    if (startDate || endDate) {
+      const validDate = (value) => {
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const parsed = new Date(`${value}T00:00:00.000Z`);
+        return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+      };
+      if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) {
+        return res.status(400).json({ message: 'Période invalide.' });
+      }
+      clauses.push('DATE(COALESCE(a.date_publication, a.date_creation)) BETWEEN ? AND ?');
+      values.push(startDate, endDate);
+    }
     const isMine = mine === '1' || mine === 'true' || mine === true;
     const statut = isMine && rawStatut === 'active' ? 'all' : rawStatut;
 
@@ -557,7 +570,6 @@ async function updateStatus(req, res, next) {
     if (!statut || !allowedStatuses.includes(statut)) {
       return res.status(400).json({ message: 'Statut requis.' });
     }
-
     // Lors du passage à 'active' : fixe date_publication (une seule fois grâce
     // à COALESCE) puis calcule date_expiration = date_publication + 2 mois
     // pour un membre (offre gratuite) ou + 4 mois pour un proprio/pro (partenaire).
@@ -568,10 +580,26 @@ async function updateStatus(req, res, next) {
            INTERVAL CASE WHEN type_bailleur = 'membre' THEN 2 ELSE 4 END MONTH
          )`
       : '';
-    await query(
-      `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
-      [statut, req.params.id]
-    );
+    const action = statut === 'active' ? 'Validation' : statut === 'rejected' ? 'Rejet' : 'Correction';
+    const userId = req.user?.id || req.user?.id_utilisateur || null;
+    await journalService.ensureJournalSchema();
+    const moderation = await withTransaction(async (tx) => {
+      const [current] = await tx('SELECT statut FROM annonces WHERE id_annonce = ? FOR UPDATE', [req.params.id]);
+      if (!current) return { missing: true, changed: false };
+      if (current.statut === statut) return { missing: false, changed: false };
+
+      await tx(
+        `UPDATE annonces SET statut = ?, date_modification = NOW()${publicationSql} WHERE id_annonce = ?`,
+        [statut, req.params.id]
+      );
+      await journalService.insertJournalAction(tx, userId, action, 'annonce', req.params.id, {
+        ancien_statut: current.statut,
+        statut,
+      });
+      return { missing: false, changed: true };
+    });
+    if (moderation.missing) return res.status(404).json({ message: 'Annonce introuvable.' });
+    if (!moderation.changed) return res.json(await getByIdInternal(req.params.id));
 
     // Notifie les alertes correspondantes uniquement quand l'annonce devient active
     if (statut === 'active') {
