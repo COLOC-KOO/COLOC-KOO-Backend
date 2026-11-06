@@ -173,6 +173,22 @@ async function listAll(req, res, next) {
       `
       SELECT c.id_candidature, c.id_utilisateur, c.id_annonce, c.message, c.statut, c.date_creation, c.date_modification,
              a.titre, a.quartier, a.id_annonce AS annonce_id, ch.prix_loyer,
+             (
+               SELECT e.id_equipe
+               FROM equipes e
+               JOIN membres_equipes me ON me.id_equipe = e.id_equipe
+               WHERE e.id_annonce = c.id_annonce AND me.id_utilisateur = c.id_utilisateur
+               ORDER BY e.date_creation DESC
+               LIMIT 1
+             ) AS equipe_id,
+             (
+               SELECT e.nom
+               FROM equipes e
+               JOIN membres_equipes me ON me.id_equipe = e.id_equipe
+               WHERE e.id_annonce = c.id_annonce AND me.id_utilisateur = c.id_utilisateur
+               ORDER BY e.date_creation DESC
+               LIMIT 1
+             ) AS equipe_nom,
              u.nom, u.prenom, u.email, u.telephone, u.profile_picture
       FROM candidatures c
       LEFT JOIN annonces a ON a.id_annonce = c.id_annonce

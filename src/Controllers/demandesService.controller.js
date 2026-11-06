@@ -410,7 +410,7 @@ async function createDemande(req, res, next) {
       reference,
       total,
       lignes: lignes.length,
-      message: 'Demande enregistrée.',
+      message: "Ta demande a été envoyée, l'équipe Coloc'KOO te revient pour confirmer ta demande. Le paiement sera demandé uniquement après confirmation de l'équipe Coloc'KOO.",
     });
   } catch (err) {
     next(err);

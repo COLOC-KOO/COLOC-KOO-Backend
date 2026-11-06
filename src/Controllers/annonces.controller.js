@@ -478,6 +478,9 @@ async function create(req, res, next) {
 // Met à jour les champs, la chambre, les équipements, règles et photos d'une annonce existante
 async function update(req, res, next) {
   try {
+    if (normalizeRole(req.user?.role || req.user?.poste) === 'moderator') {
+      return res.status(403).json({ message: 'Un modérateur ne peut pas modifier le contenu d’une annonce.' });
+    }
     const allowed = [
       'titre', 'description', 'statut', 'type_bailleur', 'mode_annonce', 'type_annonce',
       'type_propriete', 'type_bail', 'clause_solidarite', 'total_colocataires', 'surface_totale', 'adresse_exacte', 'quartier',
@@ -575,9 +578,13 @@ async function update(req, res, next) {
 async function updateStatus(req, res, next) {
   try {
     const { statut } = req.body;
+    const raison = String(req.body.raison || '').trim();
     const allowedStatuses = ['pending', 'active', 'rejected', 'archived', 'expired', 'en_attente', 'refusee', 'terminee'];
     if (!statut || !allowedStatuses.includes(statut)) {
       return res.status(400).json({ message: 'Statut requis.' });
+    }
+    if (statut === 'rejected' && !raison) {
+      return res.status(400).json({ message: 'Un motif est obligatoire pour refuser une annonce.' });
     }
     // Lors du passage à 'active' : fixe date_publication (une seule fois grâce
     // à COALESCE) puis calcule date_expiration = date_publication + 2 mois
@@ -593,7 +600,10 @@ async function updateStatus(req, res, next) {
     const userId = req.user?.id || req.user?.id_utilisateur || null;
     await journalService.ensureJournalSchema();
     const moderation = await withTransaction(async (tx) => {
-      const [current] = await tx('SELECT statut FROM annonces WHERE id_annonce = ? FOR UPDATE', [req.params.id]);
+      const [current] = await tx(
+        'SELECT statut, id_utilisateur, titre FROM annonces WHERE id_annonce = ? FOR UPDATE',
+        [req.params.id]
+      );
       if (!current) return { missing: true, changed: false };
       if (current.statut === statut) return { missing: false, changed: false };
 
@@ -604,8 +614,9 @@ async function updateStatus(req, res, next) {
       await journalService.insertJournalAction(tx, userId, action, 'annonce', req.params.id, {
         ancien_statut: current.statut,
         statut,
+        raison: statut === 'rejected' ? raison : null,
       });
-      return { missing: false, changed: true };
+      return { missing: false, changed: true, ownerId: current.id_utilisateur, title: current.titre };
     });
     if (moderation.missing) return res.status(404).json({ message: 'Annonce introuvable.' });
     if (!moderation.changed) return res.json(await getByIdInternal(req.params.id));
@@ -618,6 +629,14 @@ async function updateStatus(req, res, next) {
         console.error('Erreur matchAlertesPourAnnonce:', matchErr.message);
         // Best-effort : on ne bloque pas la réponse si le matching échoue
       }
+    }
+    if (statut === 'rejected' && moderation.ownerId) {
+      await notify.notifyUser(moderation.ownerId, {
+        titre: 'Annonce refusée',
+        texte: `Ton annonce « ${moderation.title} » a été refusée. Motif : ${raison}`,
+        lien: `/annonces/${req.params.id}`,
+        type: 'systeme',
+      });
     }
 
     const updated = await getByIdInternal(req.params.id);
