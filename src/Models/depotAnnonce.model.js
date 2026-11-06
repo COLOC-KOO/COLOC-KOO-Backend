@@ -104,14 +104,45 @@ function normalizeParkingCouvert(value) {
   return 0;
 }
 
-async function findOrCreateVilleId(ville) {
-  const name = String(ville || '').trim() || 'Antananarivo';
-  const existing = await query('SELECT id_ville FROM villes WHERE LOWER(nom_ville) = LOWER(?) LIMIT 1', [name]);
-  if (existing.length > 0) return existing[0].id_ville;
+const VILLE_ALIASES = {
+  'tana': 'Antananarivo',
+  'tananarive': 'Antananarivo',
+  'tananarivo': 'Antananarivo',
+};
+
+async function findVilleIdByName(name) {
+  const rows = await query(
+    'SELECT id_ville FROM villes WHERE LOWER(TRIM(nom_ville)) = LOWER(TRIM(?)) LIMIT 1',
+    [name]
+  );
+  return rows[0]?.id_ville || null;
+}
+
+// Rattache le depot a une ville existante. Ne cree plus de ville a la volee :
+// les saisies libres ("Tana", adresses geocodees…) sont repliees sur la liste
+// officielle, avec Antananarivo comme valeur par defaut.
+async function resolveVilleId({ idVille, ville }) {
+  const direct = Number(idVille);
+  if (Number.isInteger(direct) && direct > 0) {
+    const exists = await query('SELECT id_ville FROM villes WHERE id_ville = ? LIMIT 1', [direct]);
+    if (exists.length > 0) return exists[0].id_ville;
+  }
+
+  const cleaned = String(ville || '').trim();
+  const candidates = [cleaned, VILLE_ALIASES[cleaned.toLowerCase()]].filter(Boolean);
+  for (const candidate of candidates) {
+    const id = await findVilleIdByName(candidate);
+    if (id) return id;
+  }
+
+  const defaultId = await findVilleIdByName('Antananarivo');
+  if (defaultId) return defaultId;
+
+  const anyVille = await query('SELECT id_ville FROM villes ORDER BY id_ville LIMIT 1');
+  if (anyVille.length > 0) return anyVille[0].id_ville;
 
   const fallbackRegion = await query('SELECT id_region FROM regions ORDER BY id_region LIMIT 1');
-  const regionId = fallbackRegion[0]?.id_region || 1;
-  return insertAndGetId('INSERT INTO villes (nom_ville, id_region) VALUES (?, ?)', [name, regionId]);
+  return insertAndGetId('INSERT INTO villes (nom_ville, id_region) VALUES (?, ?)', ['Antananarivo', fallbackRegion[0]?.id_region || 1]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -129,7 +160,7 @@ async function createDepotAnnonce(userId, payload) {
   console.log('meublée (1ère chambre) ->', payload.chambres?.[0]?.meublee);
   const rooms = Array.isArray(payload.chambres) && payload.chambres.length > 0 ? payload.chambres : [];
   const reference = `DPA-${Date.now().toString().slice(-8)}`;
-  const idVille = await findOrCreateVilleId(payload.ville);
+  const idVille = await resolveVilleId({ idVille: payload.id_ville, ville: payload.ville });
 
   const logement = normalizeDepotLogement(payload.logement);
   const annonceTypeAnnonce = normalizeAnnonceTypeAnnonce(payload.type_annonce);

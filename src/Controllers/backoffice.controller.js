@@ -736,7 +736,7 @@ async function moderateMemberVerification(req, res, next) {
         action,
         'profil',
         req.params.id,
-        { statut, raison: statut === 'non_conforme' ? raison : null }
+        { ancien_statut: member.statut_verification, statut, raison: statut === 'non_conforme' ? raison : null }
       );
       return { missing: false, changed: true };
     });
@@ -947,7 +947,7 @@ async function sendWarning(req, res, next) {
        VALUES (?, ?, ?, ?, 0)`,
       [actorId(req), id_utilisateur, subject, text]
     );
-    await insertInApp(id_utilisateur, 'message', subject, text, `/admin/messages?message=${id}`);
+    await insertInApp(id_utilisateur, 'message', subject, text, '/compte?tab=conversations');
     await logAction(req, 'Message', 'utilisateur', id_utilisateur, { raison: subject, id_message: id });
     res.status(201).json({ id_message: id, redirect: '/admin/messages' });
   } catch (err) {
@@ -997,6 +997,9 @@ async function conversations(req, res, next) {
 
 async function conversationMessages(req, res, next) {
   try {
+    const a = Number(req.params.a);
+    const b = Number(req.params.b);
+    const admin = Number(actorId(req));
     const rows = await query(
       `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
               de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
@@ -1005,9 +1008,11 @@ async function conversationMessages(req, res, next) {
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
-       WHERE (m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?)
+       WHERE ((m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?))
+          OR (m.id_expediteur = ? AND m.id_destinataire IN (?, ?))
+          OR (m.id_destinataire = ? AND m.id_expediteur IN (?, ?))
        ORDER BY m.date_envoi ASC`,
-      [req.params.a, req.params.b, req.params.b, req.params.a]
+      [a, b, b, a, admin, a, b, admin, a, b]
     );
     res.json(rows);
   } catch (err) {
@@ -1508,7 +1513,16 @@ async function deletePartenaireRequest(req, res, next) {
 async function partenaires(req, res, next) {
   try {
     await ensurePartnerPricingSchema();
-    const rows = await query('SELECT * FROM partenaires ORDER BY actif DESC, niveau DESC, nom ASC');
+    const rows = await query(
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM campagnes c
+               WHERE c.id_partenaire = p.id_partenaire
+                 AND COALESCE(c.statut, '') <> 'suspendue'
+                 AND DATE(c.date_debut) <= CURRENT_DATE()
+                 AND (c.date_fin IS NULL OR DATE(c.date_fin) >= CURRENT_DATE())) AS campagnes_en_cours
+       FROM partenaires p
+       ORDER BY p.actif DESC, p.niveau DESC, p.nom ASC`
+    );
     res.json(rows);
   } catch (err) {
     next(err);
