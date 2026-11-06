@@ -212,6 +212,32 @@ async function ensureMemberVerificationSchema() {
   }
 }
 
+let memberModerationSchemaPromise;
+async function ensureMemberModerationSchema() {
+  if (!memberModerationSchemaPromise) {
+    memberModerationSchemaPromise = (async () => {
+      const columns = [
+        ['date_suspension', 'DATETIME NULL'],
+        ['id_suspension_par', 'INT NULL'],
+        ['motif_suspension', 'TEXT NULL'],
+      ];
+      for (const [name, definition] of columns) {
+        const rows = await query(
+          'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+          ['utilisateurs', name]
+        );
+        if (!rows.length) {
+          await query(`ALTER TABLE utilisateurs ADD COLUMN ${name} ${definition}`);
+        }
+      }
+    })().catch((error) => {
+      memberModerationSchemaPromise = undefined;
+      throw error;
+    });
+  }
+  await memberModerationSchemaPromise;
+}
+
 async function logAction(req, action, cibleType, cibleId, details = null) {
   await ensureBackofficeSchema();
   await journalService.logAction(actorId(req), action, cibleType, cibleId, details);
@@ -359,7 +385,8 @@ function splitFullName(fullName) {
 async function members(req, res, next) {
   try {
     await ensureMemberVerificationSchema();
-    const { role, q, statut } = req.query;
+    await ensureMemberModerationSchema();
+    const { role, q, statut, verification } = req.query;
     const roleMap = {
       locataires: 'coloc',
       colocataires: 'coloc',
@@ -383,6 +410,10 @@ async function members(req, res, next) {
       clauses.push('u.statut = ?');
       values.push(statut);
     }
+    if (verification && verification !== 'all') {
+      clauses.push('u.statut_verification = ?');
+      values.push(verification);
+    }
     if (q) {
       clauses.push('(u.nom LIKE ? OR u.prenom LIKE ? OR u.email LIKE ? OR u.telephone LIKE ?)');
       values.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
@@ -390,11 +421,14 @@ async function members(req, res, next) {
 
     const rows = await query(
       `SELECT u.*, r.nom_role,
+              suspension_actor.nom AS suspension_actor_nom,
+              suspension_actor.prenom AS suspension_actor_prenom,
               COUNT(DISTINCT a.id_annonce) AS annonces_count,
               COUNT(DISTINCT c.id_candidature) AS candidatures_count,
               COUNT(DISTINCT s.id_signalement) AS signalements_count
        FROM utilisateurs u
        JOIN roles r ON r.id_role = u.id_role
+       LEFT JOIN utilisateurs suspension_actor ON suspension_actor.id_utilisateur = u.id_suspension_par
        LEFT JOIN annonces a ON a.id_utilisateur = u.id_utilisateur
        LEFT JOIN candidatures c ON c.id_utilisateur = u.id_utilisateur
        LEFT JOIN signalements s ON s.id_utilisateur_cible = u.id_utilisateur
@@ -408,10 +442,104 @@ async function members(req, res, next) {
       ...mapUserRow(row),
       verificationStatus: row.statut_verification,
       verificationReason: row.motif_verification,
+      suspensionDate: row.date_suspension,
+      suspensionReason: row.motif_suspension,
+      suspensionActor: [row.suspension_actor_prenom, row.suspension_actor_nom].filter(Boolean).join(' ') || null,
       annoncesCount: Number(row.annonces_count || 0),
       candidaturesCount: Number(row.candidatures_count || 0),
       signalementsCount: Number(row.signalements_count || 0),
     })));
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function memberDetails(req, res, next) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ message: 'Identifiant utilisateur invalide.' });
+    await ensureMemberVerificationSchema();
+    await ensureMemberModerationSchema();
+    await ensureBackofficeSchema();
+
+    const [memberRows, annonces, candidatures, equipes, historique, signalements] = await Promise.all([
+      query(
+        `SELECT u.*, r.nom_role,
+                suspension_actor.nom AS suspension_actor_nom,
+                suspension_actor.prenom AS suspension_actor_prenom
+         FROM utilisateurs u
+         JOIN roles r ON r.id_role = u.id_role
+         LEFT JOIN utilisateurs suspension_actor ON suspension_actor.id_utilisateur = u.id_suspension_par
+         WHERE u.id_utilisateur = ?
+         LIMIT 1`,
+        [id]
+      ),
+      query(
+        `SELECT a.id_annonce, a.titre, a.statut, a.date_creation, a.date_publication, v.nom_ville
+         FROM annonces a
+         LEFT JOIN villes v ON v.id_ville = a.id_ville
+         WHERE a.id_utilisateur = ?
+         ORDER BY a.date_creation DESC LIMIT 100`,
+        [id]
+      ),
+      query(
+        `SELECT c.id_candidature, c.id_annonce, c.statut, c.date_creation, a.titre
+         FROM candidatures c
+         LEFT JOIN annonces a ON a.id_annonce = c.id_annonce
+         WHERE c.id_utilisateur = ?
+         ORDER BY c.date_creation DESC LIMIT 100`,
+        [id]
+      ),
+      query(
+        `SELECT e.id_equipe, e.nom, e.statut, e.date_creation, e.id_annonce, a.titre AS annonce_titre
+         FROM membres_equipes me
+         JOIN equipes e ON e.id_equipe = me.id_equipe
+         LEFT JOIN annonces a ON a.id_annonce = e.id_annonce
+         WHERE me.id_utilisateur = ?
+         ORDER BY e.date_creation DESC LIMIT 100`,
+        [id]
+      ),
+      query(
+        `SELECT ja.id_action, ja.action, ja.cible_type, ja.cible_id, ja.details, ja.date_action,
+                actor.nom AS acteur_nom, actor.prenom AS acteur_prenom
+         FROM journal_actions ja
+         LEFT JOIN utilisateurs actor ON actor.id_utilisateur = ja.id_utilisateur
+         WHERE ja.id_utilisateur = ?
+            OR (ja.cible_type IN ('utilisateur', 'profil') AND ja.cible_id = ?)
+         ORDER BY ja.date_action DESC LIMIT 100`,
+        [id, id]
+      ),
+      query(
+        `SELECT s.id_signalement, s.statut, s.raison, s.description, s.date_signalement,
+                s.id_utilisateur_signalant, s.id_utilisateur_cible, s.id_annonce,
+                reporter.nom AS signaleur_nom, reporter.prenom AS signaleur_prenom,
+                a.titre AS annonce_titre
+         FROM signalements s
+         LEFT JOIN utilisateurs reporter ON reporter.id_utilisateur = s.id_utilisateur_signalant
+         LEFT JOIN annonces a ON a.id_annonce = s.id_annonce
+         WHERE s.id_utilisateur_cible = ? OR s.id_utilisateur_signalant = ?
+         ORDER BY s.date_signalement DESC LIMIT 100`,
+        [id, id]
+      ),
+    ]);
+
+    if (!memberRows.length) return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    const row = memberRows[0];
+    res.json({
+      member: {
+        ...mapUserRow(row),
+        verificationStatus: row.statut_verification,
+        verificationReason: row.motif_verification,
+        suspensionDate: row.date_suspension,
+        suspensionReason: row.motif_suspension,
+        suspensionActor: [row.suspension_actor_prenom, row.suspension_actor_nom].filter(Boolean).join(' ') || null,
+      },
+      annonces,
+      candidatures,
+      equipes,
+      historique,
+      signalements,
+    });
   } catch (err) {
     next(err);
   }
@@ -631,33 +759,63 @@ async function moderateMember(req, res, next) {
   try {
     const { raison, date_suspension_fin } = req.body;
     const statut = normalizeMemberStatut(req.body.statut);
+    const reason = String(raison || '').trim();
 
     if (!MEMBER_STATUSES.includes(statut)) {
       return res.status(400).json({ message: `Statut invalide. Valeurs possibles : ${MEMBER_STATUSES.join(', ')}.` });
     }
+    if (statut === 'suspended' && !reason) {
+      return res.status(400).json({ message: 'Un motif est obligatoire pour suspendre un compte.' });
+    }
+    await ensureMemberModerationSchema();
 
     // Un membre du staff ne peut pas se suspendre lui-meme (il perdrait l'acces).
     if (Number(req.params.id) === Number(req.user?.id) && statut !== 'active') {
       return res.status(400).json({ message: 'Vous ne pouvez pas modifier le statut de votre propre compte.' });
     }
 
-    const [cible] = await query(
-      `SELECT u.id_utilisateur, r.nom_role
-       FROM utilisateurs u JOIN roles r ON r.id_role = u.id_role
-       WHERE u.id_utilisateur = ? LIMIT 1`,
-      [req.params.id]
-    );
-    if (!cible) {
-      return res.status(404).json({ message: 'Utilisateur introuvable.' });
-    }
-    // Seul un super admin peut modifier le statut d'un autre super admin.
-    if (cible.nom_role === 'super_admin' && normalizeRole(req.user?.role || req.user?.poste) !== 'super_admin') {
-      return res.status(403).json({ message: 'Seul un super administrateur peut modifier ce compte.' });
-    }
+    const result = await withTransaction(async (tx) => {
+      const [cible] = await tx(
+        `SELECT u.id_utilisateur, u.statut, u.motif_suspension, r.nom_role
+         FROM utilisateurs u JOIN roles r ON r.id_role = u.id_role
+         WHERE u.id_utilisateur = ? FOR UPDATE`,
+        [req.params.id]
+      );
+      if (!cible) return { missing: true, forbidden: false, changed: false };
+      if (cible.nom_role === 'super_admin' && normalizeRole(req.user?.role || req.user?.poste) !== 'super_admin') {
+        return { missing: false, forbidden: true, changed: false };
+      }
+      const changed = cible.statut !== statut ||
+        (statut === 'suspended' && String(cible.motif_suspension || '').trim() !== reason);
+      if (!changed) return { missing: false, forbidden: false, changed: false };
 
-    await query('UPDATE utilisateurs SET statut = ?, date_suspension_fin = ? WHERE id_utilisateur = ?', [statut, date_suspension_fin || null, req.params.id]);
-    await logAction(req, statut === 'suspended' ? 'Suspension' : 'Correction', 'utilisateur', req.params.id, { statut, raison });
-    res.json({ message: 'Membre mis a jour.', statut });
+      await tx(
+        `UPDATE utilisateurs
+         SET statut = ?, date_suspension_fin = ?,
+             date_suspension = ?, id_suspension_par = ?, motif_suspension = ?
+         WHERE id_utilisateur = ?`,
+        [
+          statut,
+          statut === 'suspended' ? date_suspension_fin || null : null,
+          statut === 'suspended' ? new Date() : null,
+          statut === 'suspended' ? actorId(req) : null,
+          statut === 'suspended' ? reason : null,
+          req.params.id,
+        ]
+      );
+      await journalService.insertJournalAction(
+        tx,
+        actorId(req),
+        statut === 'suspended' ? 'Suspension' : cible.statut === 'suspended' ? 'Réactivation' : 'Correction',
+        'utilisateur',
+        req.params.id,
+        { statut, raison: statut === 'suspended' ? reason : null }
+      );
+      return { missing: false, forbidden: false, changed: true };
+    });
+    if (result.missing) return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    if (result.forbidden) return res.status(403).json({ message: 'Seul un super administrateur peut modifier ce compte.' });
+    res.json({ message: result.changed ? 'Membre mis a jour.' : 'Le statut du membre est déjà à jour.', statut, changed: result.changed });
   } catch (err) {
     next(err);
   }
@@ -890,9 +1048,26 @@ async function journal(req, res, next) {
   try {
     await ensureBackofficeSchema();
     const rows = await query(
-      `SELECT ja.*, u.nom, u.prenom, u.email
+      `SELECT ja.*, u.nom, u.prenom, u.email, r.nom_role,
+              COALESCE(
+                a.titre,
+                NULLIF(TRIM(CONCAT_WS(' ', cible_user.prenom, cible_user.nom)), ''),
+                p.nom,
+                service.nom,
+                CASE WHEN s.id_signalement IS NOT NULL THEN CONCAT('Signalement #', s.id_signalement) END,
+                CASE WHEN ja.cible_type IS NOT NULL AND ja.cible_id IS NOT NULL
+                  THEN CONCAT(ja.cible_type, ' #', ja.cible_id)
+                  ELSE ja.cible_type
+                END
+              ) AS cible_libelle
        FROM journal_actions ja
        LEFT JOIN utilisateurs u ON u.id_utilisateur = ja.id_utilisateur
+       LEFT JOIN roles r ON r.id_role = u.id_role
+       LEFT JOIN annonces a ON ja.cible_type IN ('annonce', 'annonces') AND a.id_annonce = ja.cible_id
+       LEFT JOIN utilisateurs cible_user ON ja.cible_type IN ('profil', 'utilisateur') AND cible_user.id_utilisateur = ja.cible_id
+       LEFT JOIN partenaires p ON ja.cible_type = 'partenaire' AND p.id_partenaire = ja.cible_id
+       LEFT JOIN services_ckoo service ON ja.cible_type = 'service_ckoo' AND service.id_service = ja.cible_id
+       LEFT JOIN signalements s ON ja.cible_type = 'signalement' AND s.id_signalement = ja.cible_id
        ORDER BY ja.date_action DESC
        LIMIT 1000`
     );
@@ -910,13 +1085,22 @@ async function deleteJournalEntry(req, res, next) {
     }
 
     await ensureBackofficeSchema();
-    const existing = await query('SELECT id_action FROM journal_actions WHERE id_action = ?', [id]);
-    if (!existing.length) {
-      return res.status(404).json({ message: 'EntrÃ©e introuvable.' });
-    }
-
-    await query('DELETE FROM journal_actions WHERE id_action = ?', [id]);
-    res.json({ message: 'EntrÃ©e du journal supprimÃ©e.' });
+    const deleted = await withTransaction(async (tx) => {
+      const [existing] = await tx(
+        'SELECT id_action, id_utilisateur, action, cible_type, cible_id, details FROM journal_actions WHERE id_action = ? FOR UPDATE',
+        [id]
+      );
+      if (!existing) return false;
+      await tx('DELETE FROM journal_actions WHERE id_action = ?', [id]);
+      await journalService.insertJournalAction(tx, actorId(req), 'Suppression', 'journal_action', id, {
+        action: existing.action,
+        cible_type: existing.cible_type,
+        cible_id: existing.cible_id,
+      });
+      return true;
+    });
+    if (!deleted) return res.status(404).json({ message: 'Entrée introuvable.' });
+    res.json({ message: 'Entrée du journal supprimée et suppression tracée.' });
   } catch (err) {
     next(err);
   }
@@ -1718,6 +1902,7 @@ module.exports = {
   dashboard,
   queue,
   members,
+  memberDetails,
   stats,
   moderateAnnonce,
   moderateMember,
