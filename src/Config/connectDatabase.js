@@ -86,6 +86,8 @@ async function ensureServiceDiscountSchema() {
     services_ckoo: [
       { name: 'reduction_4_jours', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
       { name: 'reduction_5_jours', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
+      { name: 'visibilite', definition: "ENUM('toutes','zones') NOT NULL DEFAULT 'zones'" },
+      { name: 'villes_ids', definition: 'JSON NULL' },
     ],
     demandes_service: [
       { name: 'reduction_pourcentage', definition: 'DECIMAL(5,2) NOT NULL DEFAULT 0' },
