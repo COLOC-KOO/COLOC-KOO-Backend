@@ -258,26 +258,59 @@ async function listCatalogue(req, res, next) {
     );
     const rows = await query(
       `SELECT id_service, cle_service, nom, description, prix, unite,
-              reduction_4_jours, reduction_5_jours
+              reduction_4_jours, reduction_5_jours, visibilite, villes_ids
        FROM services_ckoo
        WHERE cle_service LIKE 'service\\_%' AND est_actif = 1
        ORDER BY nom ASC`
     );
+
+    // Resout les id_ville des offres 'zones' en noms, pour que le front compare
+    // directement a la ville du profil utilisateur (qui est un nom).
+    const allIds = new Set();
+    for (const r of rows) parseVillesIds(r.villes_ids).forEach((id) => allIds.add(id));
+    let nomById = new Map();
+    if (allIds.size) {
+      const placeholders = [...allIds].map(() => '?').join(',');
+      const villes = await query(
+        `SELECT id_ville, nom_ville FROM villes WHERE id_ville IN (${placeholders})`,
+        [...allIds]
+      );
+      nomById = new Map(villes.map((v) => [Number(v.id_ville), v.nom_ville]));
+    }
+
     res.json(
-      rows.map((r) => ({
-        id: r.id_service,
-        cle: r.cle_service,
-        nom: r.nom,
-        description: r.description,
-        prix: Number(r.prix) || 0,
-        unite: r.unite,
-        reduction_4_jours: Number(r.reduction_4_jours) || 0,
-        reduction_5_jours: Number(r.reduction_5_jours) || 0,
-      }))
+      rows.map((r) => {
+        const mode = r.visibilite === 'toutes' ? 'toutes' : 'zones';
+        const ids = mode === 'zones' ? parseVillesIds(r.villes_ids) : [];
+        return {
+          id: r.id_service,
+          cle: r.cle_service,
+          nom: r.nom,
+          description: r.description,
+          prix: Number(r.prix) || 0,
+          unite: r.unite,
+          reduction_4_jours: Number(r.reduction_4_jours) || 0,
+          reduction_5_jours: Number(r.reduction_5_jours) || 0,
+          visibilite: mode,
+          zones: ids.map((id) => nomById.get(id)).filter(Boolean),
+        };
+      })
     );
   } catch (err) {
     next(err);
   }
+}
+
+// villes_ids est une colonne JSON ; le driver MySQL peut renvoyer un tableau
+// deja parse ou une chaine. On normalise en tableau d'ints positifs.
+function parseVillesIds(raw) {
+  if (raw == null) return [];
+  let arr = raw;
+  if (typeof arr === 'string') {
+    try { arr = JSON.parse(arr); } catch { return []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map(Number).filter((n) => Number.isInteger(n) && n > 0);
 }
 
 // POST /api/demandes-service — connecte
@@ -317,12 +350,30 @@ async function createDemande(req, res, next) {
     }
     const placeholders = ids.map(() => '?').join(',');
     const catalogue = await query(
-      `SELECT id_service, nom, prix, unite, reduction_4_jours, reduction_5_jours
+      `SELECT id_service, nom, prix, unite, reduction_4_jours, reduction_5_jours, visibilite, villes_ids
        FROM services_ckoo
        WHERE id_service IN (${placeholders}) AND cle_service LIKE 'service\\_%' AND est_actif = 1`,
       ids
     );
     const serviceById = new Map(catalogue.map((row) => [Number(row.id_service), row]));
+
+    // Controle de zone serveur : un service limite a des villes n'est commandable
+    // que si la ville du profil utilisateur en fait partie. Fail-open si l'utilisateur
+    // n'a pas de ville renseignee (on ne bloque pas une demande legitime).
+    const userRows = await query('SELECT ville_actuelle FROM utilisateurs WHERE id_utilisateur = ?', [userId]);
+    const userVilleId = userRows.length ? Number(userRows[0].ville_actuelle) : null;
+    if (Number.isInteger(userVilleId) && userVilleId > 0) {
+      const horsZone = requestedServices.some((requested) => {
+        const service = serviceById.get(requested.id_service);
+        if (!service || service.visibilite !== 'zones') return false;
+        return !parseVillesIds(service.villes_ids).includes(userVilleId);
+      });
+      if (horsZone) {
+        return res.status(400).json({
+          message: 'Certains services sélectionnés ne sont pas disponibles dans votre ville.',
+        });
+      }
+    }
 
     const lignes = [];
     for (const requested of requestedServices) {

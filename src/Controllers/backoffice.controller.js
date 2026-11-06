@@ -736,7 +736,7 @@ async function moderateMemberVerification(req, res, next) {
         action,
         'profil',
         req.params.id,
-        { statut, raison: statut === 'non_conforme' ? raison : null }
+        { ancien_statut: member.statut_verification, statut, raison: statut === 'non_conforme' ? raison : null }
       );
       return { missing: false, changed: true };
     });
@@ -947,7 +947,7 @@ async function sendWarning(req, res, next) {
        VALUES (?, ?, ?, ?, 0)`,
       [actorId(req), id_utilisateur, subject, text]
     );
-    await insertInApp(id_utilisateur, 'message', subject, text, `/admin/messages?message=${id}`);
+    await insertInApp(id_utilisateur, 'message', subject, text, '/compte?tab=conversations');
     await logAction(req, 'Message', 'utilisateur', id_utilisateur, { raison: subject, id_message: id });
     res.status(201).json({ id_message: id, redirect: '/admin/messages' });
   } catch (err) {
@@ -997,6 +997,9 @@ async function conversations(req, res, next) {
 
 async function conversationMessages(req, res, next) {
   try {
+    const a = Number(req.params.a);
+    const b = Number(req.params.b);
+    const admin = Number(actorId(req));
     const rows = await query(
       `SELECT m.*, ex.nom AS expediteur_nom, ex.prenom AS expediteur_prenom,
               de.nom AS destinataire_nom, de.prenom AS destinataire_prenom,
@@ -1005,9 +1008,11 @@ async function conversationMessages(req, res, next) {
        JOIN utilisateurs ex ON ex.id_utilisateur = m.id_expediteur
        JOIN utilisateurs de ON de.id_utilisateur = m.id_destinataire
        LEFT JOIN annonces a ON a.id_annonce = m.id_annonce
-       WHERE (m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?)
+       WHERE ((m.id_expediteur = ? AND m.id_destinataire = ?) OR (m.id_expediteur = ? AND m.id_destinataire = ?))
+          OR (m.id_expediteur = ? AND m.id_destinataire IN (?, ?))
+          OR (m.id_destinataire = ? AND m.id_expediteur IN (?, ?))
        ORDER BY m.date_envoi ASC`,
-      [req.params.a, req.params.b, req.params.b, req.params.a]
+      [a, b, b, a, admin, a, b, admin, a, b]
     );
     res.json(rows);
   } catch (err) {
@@ -1134,10 +1139,56 @@ async function suiviMissions(req, res, next) {
 async function servicesCkoo(req, res, next) {
   try {
     const rows = await query('SELECT * FROM services_ckoo ORDER BY est_actif DESC, nom ASC');
-    res.json(rows);
+    res.json(
+      rows.map((row) => ({
+        ...row,
+        villes_ids: parseVillesIds(row.villes_ids),
+      }))
+    );
   } catch (err) {
     next(err);
   }
+}
+
+// Villes_ids est stocke en JSON (colonne MySQL) mais le driver peut renvoyer
+// une chaine, un tableau deja parse ou null. On normalise en tableau d'ints.
+function parseVillesIds(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+// Verifie la portee d'un service et renvoie { visibilite, villes_ids (JSON string|null) }.
+// Une portee 'zones' sans ville valide est refusee a l'enregistrement explicite,
+// mais le defaut 'zones'/NULL reste autorise pour les lignes non encore configurees.
+async function normalizeServiceVisibility({ visibilite, villes_ids }) {
+  const mode = visibilite === 'toutes' ? 'toutes' : visibilite === 'zones' ? 'zones' : null;
+  if (!mode) {
+    const err = new Error("Visibilite invalide (attendu : 'toutes' ou 'zones').");
+    err.status = 400;
+    throw err;
+  }
+  if (mode === 'toutes') return { visibilite: 'toutes', villes_ids: null };
+
+  const ids = parseVillesIds(villes_ids);
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',');
+    const found = await query(`SELECT id_ville FROM villes WHERE id_ville IN (${placeholders})`, ids);
+    if (found.length !== new Set(ids).size) {
+      const err = new Error('Une ou plusieurs villes selectionnees sont introuvables.');
+      err.status = 400;
+      throw err;
+    }
+  }
+  return { visibilite: 'zones', villes_ids: JSON.stringify(ids) };
 }
 
 async function createServiceCkoo(req, res, next) {
@@ -1151,6 +1202,8 @@ async function createServiceCkoo(req, res, next) {
       est_actif = 1,
       reduction_4_jours = 0,
       reduction_5_jours = 0,
+      visibilite = 'zones',
+      villes_ids,
     } = req.body;
     if (!nom) return res.status(400).json({ message: 'Nom requis.' });
     const reductions = [Number(reduction_4_jours), Number(reduction_5_jours)];
@@ -1160,10 +1213,11 @@ async function createServiceCkoo(req, res, next) {
     if (reductions[1] < reductions[0]) {
       return res.status(400).json({ message: 'La réduction dès 5 jours doit être au moins égale à celle dès 4 jours.' });
     }
+    const portee = await normalizeServiceVisibility({ visibilite, villes_ids });
     const id = await insertAndGetId(
       `INSERT INTO services_ckoo
-         (cle_service, nom, description, prix, unite, est_actif, reduction_4_jours, reduction_5_jours)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (cle_service, nom, description, prix, unite, est_actif, reduction_4_jours, reduction_5_jours, visibilite, villes_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         cle_service || `service_${Date.now()}`,
         nom,
@@ -1173,6 +1227,8 @@ async function createServiceCkoo(req, res, next) {
         est_actif ? 1 : 0,
         reductions[0],
         reductions[1],
+        portee.visibilite,
+        portee.villes_ids,
       ]
     );
     await logAction(req, 'Correction', 'service_ckoo', id, { operation: 'creation' });
@@ -1228,6 +1284,21 @@ async function updateServiceCkoo(req, res, next) {
         sets.push(`${key} = ?`);
         values.push(req.body[key]);
       }
+    }
+    if (req.body.visibilite !== undefined || req.body.villes_ids !== undefined) {
+      const currentRows = await query(
+        'SELECT visibilite, villes_ids FROM services_ckoo WHERE id_service = ?',
+        [req.params.id]
+      );
+      if (!currentRows.length) return res.status(404).json({ message: 'Service introuvable.' });
+      const portee = await normalizeServiceVisibility({
+        visibilite: req.body.visibilite ?? currentRows[0].visibilite,
+        villes_ids: req.body.villes_ids ?? currentRows[0].villes_ids,
+      });
+      sets.push('visibilite = ?');
+      values.push(portee.visibilite);
+      sets.push('villes_ids = ?');
+      values.push(portee.villes_ids);
     }
     if (!sets.length) return res.status(400).json({ message: 'Aucune modification fournie.' });
     values.push(req.params.id);
@@ -1508,7 +1579,16 @@ async function deletePartenaireRequest(req, res, next) {
 async function partenaires(req, res, next) {
   try {
     await ensurePartnerPricingSchema();
-    const rows = await query('SELECT * FROM partenaires ORDER BY actif DESC, niveau DESC, nom ASC');
+    const rows = await query(
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM campagnes c
+               WHERE c.id_partenaire = p.id_partenaire
+                 AND COALESCE(c.statut, '') <> 'suspendue'
+                 AND DATE(c.date_debut) <= CURRENT_DATE()
+                 AND (c.date_fin IS NULL OR DATE(c.date_fin) >= CURRENT_DATE())) AS campagnes_en_cours
+       FROM partenaires p
+       ORDER BY p.actif DESC, p.niveau DESC, p.nom ASC`
+    );
     res.json(rows);
   } catch (err) {
     next(err);

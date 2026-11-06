@@ -572,7 +572,7 @@ async function decide(req, res, next) {
         'message',
         'Nouvelle discussion',
         contenu.slice(0, 255),
-        `/messages/${currentUserId}`
+        `/compte?tab=conversations`
       );
       return res.json({ message: 'Discussion lancée.', conversationId });
     }
