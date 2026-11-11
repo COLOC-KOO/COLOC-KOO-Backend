@@ -6,6 +6,7 @@ const controller = require('../Controllers/backoffice.controller');
 const { requireAuth, requireRole } = require('../Middleware/auth.middleware');
 // Importer les routes des campagnes
 const campagnesRoutes = require('./campagnes.routes');
+const documentsRoutes = require('./backofficeDocuments.routes');
 
 const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
@@ -61,6 +62,7 @@ router.post('/partenaires', controller.createPartenaire);
 router.patch('/partenaires/:id', controller.updatePartenaire);
 router.delete('/partenaires/:id', controller.deletePartenaire);
 router.get('/contrats', controller.contrats);
+router.use('/documents-contractuels', documentsRoutes);
 router.get('/contrats/:id', controller.contratDetails);
 router.post('/contrats', controller.saveContrat);
 router.patch('/contrats/:id', controller.saveContrat);
