@@ -39,6 +39,25 @@ async function createAlerte(req, res) {
       return res.status(400).json({ error: 'Ville introuvable pour cet id_ville' });
     }
 
+    const userRows = await query(
+      `SELECT r.nom_role
+         FROM utilisateurs u
+         JOIN roles r ON r.id_role = u.id_role
+        WHERE u.id_utilisateur = ?
+        LIMIT 1`,
+      [b.id_utilisateur]
+    );
+    const canFilterAnnouncementType = userRows[0]?.nom_role !== 'coloc';
+    const typeLabelsToCodes = {
+      'Colocation existante': 'existante',
+      "Création d'une colocation": 'creation',
+    };
+    const typesAnnonce = canFilterAnnouncementType && Array.isArray(b.types_annonce)
+      ? b.types_annonce
+          .map((type) => typeLabelsToCodes[type] || type)
+          .filter((type) => type === 'existante' || type === 'creation')
+      : [];
+
     const result = await query(
       `INSERT INTO recherches_sauvegardees
         (id_utilisateur, id_ville, quartier, prix_max, type_propriete,
@@ -49,8 +68,8 @@ async function createAlerte(req, res) {
         idVille,
         b.quartier || null,
         b.prix_max || null,
-        b.types_bien && b.types_bien.length ? b.types_bien.join(',') : null,
-        b.types_annonce && b.types_annonce.length ? b.types_annonce.join(',') : null,
+        Array.isArray(b.types_bien) && b.types_bien.length ? b.types_bien.join(',') : null,
+        typesAnnonce.length ? typesAnnonce.join(',') : null,
         b.regles && b.regles.length ? JSON.stringify(b.regles) : null,
         b.commodites ? JSON.stringify(b.commodites) : null,
         b.rayon_km || null,
