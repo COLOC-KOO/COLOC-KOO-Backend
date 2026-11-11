@@ -25,6 +25,8 @@
     verificationStatus: row.est_verifie ? 'conforme' : (row.statut_verification || 'a_verifier'),
     verificationReason: row.motif_verification || null,
     statut: row.statut,
+    suspensionReason: row.motif_suspension || null,
+    date_inscription: row.date_inscription,
     createdAt: row.date_inscription,
     rgpd_analytics: Number(row.rgpd_analytics ?? 0),
     rgpd_partenaires: Number(row.rgpd_partenaires ?? 0),

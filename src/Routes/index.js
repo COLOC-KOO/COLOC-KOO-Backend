@@ -17,5 +17,6 @@ router.use('/equipes', require('./equipes.routes'));
 router.use('/demandes-service', require('./demandesService.routes'));
 router.use('/geocode', require('./geocode.routes'));
 router.use('/depot-annonce', require('./depotAnnonce.routes'));
+router.use('/documents-contractuels', require('./documents.routes'));
 
 module.exports = router;

@@ -18,12 +18,13 @@ const DEFAULT_MOBILE_MONEY = [
   { nom: 'MVOLA', numero: '0340000000', couleur: '#e2001a', hint: "Scanne ce QR code avec l'appli MVOLA, ou compose le numero." },
 ];
 const DEFAULT_CLAUSES = [
-  { titre: 'IdentitÃ©s & logement', description: "Colocataires, adresse du bien, date d'entrÃ©e (inclus).", ordre: 1 },
-  { titre: 'RÃ©partition du loyer et des charges', description: 'Quote-part de chacun, modalitÃ©s de paiement.', ordre: 2 },
-  { titre: 'DÃ©pÃ´t de garantie / caution solidaire', description: 'Montant, conditions de restitution.', ordre: 3 },
-  { titre: "Ã‰tat des lieux d'entrÃ©e", description: 'Annexe descriptive des parties privatives et communes.', ordre: 4 },
-  { titre: 'Clause de dÃ©part anticipÃ©', description: 'PrÃ©avis, remplacement du colocataire sortant.', ordre: 5 },
+  { titre: 'Identités & logement', description: "Colocataires, adresse du bien, date d'entrée (inclus).", ordre: 1 },
+  { titre: 'Répartition du loyer et des charges', description: 'Quote-part de chacun, modalités de paiement.', ordre: 2 },
+  { titre: 'Dépôt de garantie / caution solidaire', description: 'Montant, conditions de restitution.', ordre: 3 },
+  { titre: "État des lieux d'entrée", description: 'Annexe descriptive des parties privatives et communes.', ordre: 4 },
+  { titre: 'Clause de départ anticipé', description: 'Préavis, remplacement du colocataire sortant.', ordre: 5 },
 ];
+let legacyClausesRepaired = false;
 const DEFAULT_OFFER = {
   titre: 'Aide Ã  la crÃ©ation de contrats avec les colocataires',
   texte: "Coloc'KOO peut rÃ©diger pour toi un contrat de colocation conforme, signÃ© entre les colocataires et/ou te proposer un document d'Ã©tat des lieux. Voici un aperÃ§u prÃ©-rempli avec leurs noms et l'adresse du bien :",
@@ -132,6 +133,23 @@ async function ensureContractContent() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  if (!legacyClausesRepaired) {
+    const legacyClauses = [
+      ['IdentitÃ©s & logement', 'Identités & logement', "Colocataires, adresse du bien, date d'entrÃ©e (inclus).", "Colocataires, adresse du bien, date d'entrée (inclus)."],
+      ['RÃ©partition du loyer et des charges', 'Répartition du loyer et des charges', 'Quote-part de chacun, modalitÃ©s de paiement.', 'Quote-part de chacun, modalités de paiement.'],
+      ['DÃ©pÃ´t de garantie / caution solidaire', 'Dépôt de garantie / caution solidaire', 'Montant, conditions de restitution.', 'Montant, conditions de restitution.'],
+      ["Ã‰tat des lieux d'entrÃ©e", "État des lieux d'entrée", 'Annexe descriptive des parties privatives et communes.', 'Annexe descriptive des parties privatives et communes.'],
+      ['Clause de dÃ©part anticipÃ©', 'Clause de départ anticipé', 'PrÃ©avis, remplacement du colocataire sortant.', 'Préavis, remplacement du colocataire sortant.'],
+    ];
+    for (const [legacyTitle, title, legacyDescription, description] of legacyClauses) {
+      await query(
+        'UPDATE contrat_clauses SET titre = ?, description = IF(description = ?, ?, description) WHERE titre = ?',
+        [title, legacyDescription, description, legacyTitle]
+      );
+    }
+    legacyClausesRepaired = true;
+  }
+
   const countRows = await query('SELECT COUNT(*) AS n FROM contrat_clauses');
   if (Number(countRows[0]?.n || 0) === 0) {
     for (const clause of DEFAULT_CLAUSES) {
@@ -167,7 +185,7 @@ async function contractConfig(req, res, next) {
   try {
     await ensureContractContent();
     const [clauseRows, tiers, edlPrix, mobileMoney, offer, body, bail, solidarite, mailNote, contratOffers, edlOffers] = await Promise.all([
-      query('SELECT titre, description FROM contrat_clauses WHERE est_actif = 1 ORDER BY ordre, id_clause'),
+      query('SELECT id_clause, titre, description FROM contrat_clauses WHERE est_actif = 1 ORDER BY ordre, id_clause'),
       getConfigValue('CONTRACT_TIERS', DEFAULT_CONTRACT_TIERS),
       getConfigValue('EDL_PRIX', DEFAULT_EDL_PRIX),
       getConfigValue('MOBILE_MONEY', DEFAULT_MOBILE_MONEY),

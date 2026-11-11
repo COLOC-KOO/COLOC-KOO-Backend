@@ -14,14 +14,9 @@ function normaliser(str) {
     .replace(/s\b/g, ''); // retire un 's' final (pluriel) pour comparer "Fille"/"Filles"
 }
 
-// Le frontend (TabAlertes.tsx) enregistre des libellés français lisibles
-// dans recherches_sauvegardees.type_annonce, alors que annonces.type_annonce
-// est un enum technique ('existante' | 'creation'). On traduit ici.
 const TYPE_ANNONCE_LABEL_VERS_CODE = {
   [normaliser('Colocation existante')]: 'existante',
   [normaliser("Création d'une colocation")]: 'creation',
-  // "Bien immobilier potentiel" n'a pas d'équivalent direct dans l'enum
-  // annonces.type_annonce : on ne filtre pas dessus (traité comme "tout accepter").
 };
 
 // Idem pour les règles de coloc : le frontend envoie des libellés français,
@@ -76,16 +71,14 @@ async function matchAlertesPourAnnonce(idAnnonce) {
   const rulesTexteAnnonce = (annonce.rules || '').split('||').filter(Boolean);
 
   // 2. Présélectionner les alertes candidates en SQL.
-  // NB: on NE filtre PLUS sur type_annonce en SQL, car les valeurs stockées
-  // par le frontend (libellés français) ne correspondent pas à l'enum
-  // technique de annonces.type_annonce. La traduction + le filtre se font
-  // en JS à l'étape 3 (voir TYPE_ANNONCE_LABEL_VERS_CODE).
   const candidates = await query(
-    `SELECT *
-       FROM recherches_sauvegardees
-      WHERE id_ville = ?
-        AND (prix_max IS NULL OR ? IS NULL OR prix_max >= ?)
-        AND (type_propriete IS NULL OR FIND_IN_SET(?, type_propriete))`,
+    `SELECT rs.*, r.nom_role AS role_key
+       FROM recherches_sauvegardees rs
+       LEFT JOIN utilisateurs u ON u.id_utilisateur = rs.id_utilisateur
+       LEFT JOIN roles r ON r.id_role = u.id_role
+      WHERE rs.id_ville = ?
+        AND (rs.prix_max IS NULL OR ? IS NULL OR rs.prix_max >= ?)
+        AND (rs.type_propriete IS NULL OR FIND_IN_SET(?, rs.type_propriete))`,
     [
       annonce.id_ville,
       annonce.prix_min, annonce.prix_min,
@@ -130,25 +123,15 @@ async function matchAlertesPourAnnonce(idAnnonce) {
       console.log('[MATCH DEBUG] Quartier -> pas de filtre (vide côté alerte ou annonce)');
     }
 
-    // Type d'annonce : traduction des libellés FR -> code technique
-    // (type_annonce stocké en texte séparé par virgules, ex: "Colocation existante,Bien immobilier potentiel")
-    if (alerte.type_annonce) {
-      const labelsAlerte = String(alerte.type_annonce).split(',').map((s) => s.trim()).filter(Boolean);
-      const codesConnus = labelsAlerte
-        .map((label) => TYPE_ANNONCE_LABEL_VERS_CODE[normaliser(label)])
-        .filter(Boolean); // enlève les labels sans équivalent (ex: "Bien immobilier potentiel")
-
-      console.log('[MATCH DEBUG] type_annonce alerte (libellés):', labelsAlerte, '-> codes traduits:', codesConnus);
-
-      if (codesConnus.length > 0) {
-        const match = codesConnus.includes(annonce.type_annonce);
-        console.log(`[MATCH DEBUG] type_annonce -> annonce="${annonce.type_annonce}" présent dans codes traduits=${match}`);
-        if (!match) {
-          console.log('[MATCH DEBUG] REJET alerte', alerte.id, '-> type_annonce ne correspond pas');
-          return false;
-        }
-      } else {
-        console.log('[MATCH DEBUG] type_annonce -> aucun libellé traduisible (ex: "Bien immobilier potentiel"), filtre ignoré');
+    if (alerte.type_annonce && !['coloc', 'colocataire'].includes(alerte.role_key)) {
+      const codes = String(alerte.type_annonce)
+        .split(',')
+        .map((type) => type.trim())
+        .map((type) => TYPE_ANNONCE_LABEL_VERS_CODE[normaliser(type)] || type)
+        .filter((type) => type === 'existante' || type === 'creation');
+      if (codes.length > 0 && !codes.includes(annonce.type_annonce)) {
+        console.log('[MATCH DEBUG] REJET alerte', alerte.id, '-> type_annonce ne correspond pas');
+        return false;
       }
     }
 

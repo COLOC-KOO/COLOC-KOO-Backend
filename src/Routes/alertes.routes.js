@@ -1,6 +1,7 @@
 // src/Routes/alertes.routes.js
 const express = require('express');
 const router = express.Router();
+const { requireAuth } = require('../Middleware/auth.middleware');
 
 const {
   getAlertes,
@@ -8,6 +9,8 @@ const {
   updateNotifications,
   deleteAlerte,
 } = require('../Controllers/alertes.controller.js');
+
+router.use(requireAuth);
 
 // GET /api/alertes/:idUtilisateur
 router.get('/alertes/:idUtilisateur', getAlertes);
@@ -22,4 +25,3 @@ router.patch('/alertes/:id/notifications', updateNotifications);
 router.delete('/alertes/:id', deleteAlerte);
 
 module.exports = router;
-
