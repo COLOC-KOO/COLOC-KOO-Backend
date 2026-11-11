@@ -62,17 +62,18 @@ async function list(req, res, next) {
       }
     }
     if (ville) {
-      const aliasPattern = hasToliaraSearchAlias(ville) ? '%toliara%' : null;
+      const aliasPatterns = hasToliaraSearchAlias(ville)
+        ? ['%toliara%', '%tulear%', '%tuléar%', '%toliary%']
+        : [];
       clauses.push(`(
         LOWER(v.nom_ville) LIKE ?
-        ${aliasPattern ? 'OR LOWER(v.nom_ville) LIKE ?' : ''}
+        ${aliasPatterns.map(() => 'OR LOWER(v.nom_ville) LIKE ?').join('\n        ')}
         OR LOWER(COALESCE(a.quartier, '')) LIKE ?
         OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
         OR LOWER(COALESCE(a.titre, '')) LIKE ?
       )`);
       const placeLike = `%${String(ville).toLowerCase()}%`;
-      values.push(placeLike);
-      if (aliasPattern) values.push(aliasPattern);
+      values.push(placeLike, ...aliasPatterns);
       values.push(placeLike, placeLike, placeLike);
     }
     if (quartier) {
@@ -92,18 +93,19 @@ async function list(req, res, next) {
       values.push(Number(maxPrice));
     }
     if (q) {
-      const aliasPattern = hasToliaraSearchAlias(q) ? '%toliara%' : null;
+      const aliasPatterns = hasToliaraSearchAlias(q)
+        ? ['%toliara%', '%tulear%', '%tuléar%', '%toliary%']
+        : [];
       clauses.push(`(
         LOWER(COALESCE(a.titre, '')) LIKE ?
         OR LOWER(COALESCE(a.description, '')) LIKE ?
         OR LOWER(v.nom_ville) LIKE ?
-        ${aliasPattern ? 'OR LOWER(v.nom_ville) LIKE ?' : ''}
+        ${aliasPatterns.map(() => 'OR LOWER(v.nom_ville) LIKE ?').join('\n        ')}
         OR LOWER(COALESCE(a.quartier, '')) LIKE ?
         OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
       )`);
       const queryLike = `%${String(q).toLowerCase()}%`;
-      values.push(queryLike, queryLike, queryLike);
-      if (aliasPattern) values.push(aliasPattern);
+      values.push(queryLike, queryLike, queryLike, ...aliasPatterns);
       values.push(queryLike, queryLike);
     }
     if (service) {

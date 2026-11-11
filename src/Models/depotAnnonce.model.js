@@ -118,14 +118,22 @@ async function findVilleIdByName(name) {
   return rows[0]?.id_ville || null;
 }
 
-// Rattache le depot a une ville existante. Ne cree plus de ville a la volee :
-// les saisies libres ("Tana", adresses geocodees…) sont repliees sur la liste
-// officielle, avec Antananarivo comme valeur par defaut.
+// Rattache le depot a une ville existante; une ville inconnue ne doit jamais
+// etre silencieusement associee a une autre ville.
 async function resolveVilleId({ idVille, ville }) {
-  const direct = Number(idVille);
-  if (Number.isInteger(direct) && direct > 0) {
+  const hasId = idVille !== undefined && idVille !== null && String(idVille).trim() !== '';
+  if (hasId) {
+    const direct = Number(idVille);
+    if (!Number.isInteger(direct) || direct <= 0) {
+      const error = new Error('La ville selectionnee est invalide.');
+      error.status = 400;
+      throw error;
+    }
     const exists = await query('SELECT id_ville FROM villes WHERE id_ville = ? LIMIT 1', [direct]);
     if (exists.length > 0) return exists[0].id_ville;
+    const error = new Error('La ville selectionnee n’existe pas dans la liste disponible.');
+    error.status = 400;
+    throw error;
   }
 
   const cleaned = String(ville || '').trim();
@@ -135,14 +143,13 @@ async function resolveVilleId({ idVille, ville }) {
     if (id) return id;
   }
 
-  const defaultId = await findVilleIdByName('Antananarivo');
-  if (defaultId) return defaultId;
-
-  const anyVille = await query('SELECT id_ville FROM villes ORDER BY id_ville LIMIT 1');
-  if (anyVille.length > 0) return anyVille[0].id_ville;
-
-  const fallbackRegion = await query('SELECT id_region FROM regions ORDER BY id_region LIMIT 1');
-  return insertAndGetId('INSERT INTO villes (nom_ville, id_region) VALUES (?, ?)', ['Antananarivo', fallbackRegion[0]?.id_region || 1]);
+  const error = new Error(
+    cleaned
+      ? 'La ville indiquee n’est pas disponible. Choisissez une ville dans la liste.'
+      : 'Une ville doit etre selectionnee dans la liste.'
+  );
+  error.status = 400;
+  throw error;
 }
 
 /* ------------------------------------------------------------------ */
