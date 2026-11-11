@@ -3,6 +3,10 @@ const { query } = require('../Services/db.service.js');
 // GET /api/alertes/:idUtilisateur
 async function getAlertes(req, res) {
   try {
+    if (String(req.user.id) !== String(req.params.idUtilisateur)) {
+      return res.status(403).json({ error: 'Accès non autorisé à ces alertes' });
+    }
+
     const rows = await query(
       `SELECT r.*, v.nom_ville
          FROM recherches_sauvegardees r
@@ -22,6 +26,7 @@ async function getAlertes(req, res) {
 async function createAlerte(req, res) {
   try {
     const b = req.body;
+    const idUtilisateur = req.user.id;
 
     // id_ville est obligatoire : on n'accepte plus un nom de ville,
     // seulement l'id qui référence la table `villes`
@@ -45,7 +50,7 @@ async function createAlerte(req, res) {
          JOIN roles r ON r.id_role = u.id_role
         WHERE u.id_utilisateur = ?
         LIMIT 1`,
-      [b.id_utilisateur]
+      [idUtilisateur]
     );
     const canFilterAnnouncementType = userRows[0]?.nom_role !== 'coloc';
     const typeLabelsToCodes = {
@@ -64,7 +69,7 @@ async function createAlerte(req, res) {
          type_annonce, regles, commodites, rayon_km, notif_push, notif_email)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        b.id_utilisateur,
+        idUtilisateur,
         idVille,
         b.quartier || null,
         b.prix_max || null,
@@ -111,10 +116,11 @@ async function updateNotifications(req, res) {
     }
 
     valeurs.push(id);
-    await query(
-      `UPDATE recherches_sauvegardees SET ${champs.join(', ')} WHERE id = ?`,
-      valeurs
+    const result = await query(
+      `UPDATE recherches_sauvegardees SET ${champs.join(', ')} WHERE id = ? AND id_utilisateur = ?`,
+      [...valeurs, req.user.id]
     );
+    if (!result.affectedRows) return res.status(404).json({ error: 'Alerte introuvable' });
     res.json({ ok: true });
   } catch (err) {
     console.error('Erreur updateNotifications:', err);
@@ -125,7 +131,11 @@ async function updateNotifications(req, res) {
 // DELETE /api/alertes/:id
 async function deleteAlerte(req, res) {
   try {
-    await query(`DELETE FROM recherches_sauvegardees WHERE id = ?`, [req.params.id]);
+    const result = await query(
+      `DELETE FROM recherches_sauvegardees WHERE id = ? AND id_utilisateur = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: 'Alerte introuvable' });
     res.json({ ok: true });
   } catch (err) {
     console.error('Erreur deleteAlerte:', err);

@@ -7,6 +7,7 @@ const fs = require('fs');
 const corsMiddleware = require('./Middleware/cors.middleware');
 const routes = require('./Routes');
 const { notFound, errorHandler } = require('./Middleware/error.middleware');
+const { requireAuth } = require('./Middleware/auth.middleware');
 const candidatureRoutes = require('./Routes/candidatures.routes');
 const contratsRoutes = require('./Routes/contrats.route');
 
@@ -96,8 +97,8 @@ function createApp() {
   app.use('/api', alertesRoutes);
 
   // NOUVELLES ROUTES : préférences de notification (AVANT le notFound !)
-  app.get('/api/preferences/:idUtilisateur', getPreferences);
-  app.put('/api/preferences/:idUtilisateur', updatePreferences);
+  app.get('/api/preferences/:idUtilisateur', requireAuth, getPreferences);
+  app.put('/api/preferences/:idUtilisateur', requireAuth, updatePreferences);
 
   // ⚠️ Ces deux middlewares DOIVENT rester en dernier
   app.use(notFound);
