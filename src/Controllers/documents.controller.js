@@ -3,9 +3,15 @@ const { ensureContractContent, getConfigValue } = require('./meta.controller');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const PDFDocument = require('pdfkit');
 
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
+const DOCUMENT_ARCHIVES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-archives');
+const execFileAsync = promisify(execFile);
 
 async function ensureDocumentRequestsSchema() {
   await query(`
@@ -19,6 +25,9 @@ async function ensureDocumentRequestsSchema() {
       clauses_ids JSON NULL,
       clauses_snapshot JSON NULL,
       preuve_paiement VARCHAR(80) NULL,
+      archive_filename VARCHAR(80) NULL,
+      archive_sha256 CHAR(64) NULL,
+      archive_generated_at DATETIME NULL,
       montant INT NOT NULL,
       statut ENUM('brouillon','a-verifier','en-cours','valide','refuse') NOT NULL DEFAULT 'brouillon',
       statut_paiement ENUM('en-attente','a-verifier','conforme','non-conforme') NOT NULL DEFAULT 'en-attente',
@@ -32,6 +41,19 @@ async function ensureDocumentRequestsSchema() {
       KEY idx_documents_contractuels_status (statut, statut_paiement)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS empreintes_documents_contractuels (
+      id_empreinte BIGINT NOT NULL AUTO_INCREMENT,
+      id_demande INT NOT NULL,
+      id_utilisateur INT NOT NULL,
+      type_pdf ENUM('copie_chiffree') NOT NULL,
+      sha256 CHAR(64) NOT NULL,
+      date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id_empreinte),
+      KEY idx_empreintes_document (id_demande, date_creation),
+      KEY idx_empreintes_sha256 (sha256)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
   const snapshotColumn = await query(
     "SHOW COLUMNS FROM demandes_documents_contractuels LIKE 'clauses_snapshot'"
   );
@@ -43,6 +65,19 @@ async function ensureDocumentRequestsSchema() {
   );
   if (!proofColumn.length) {
     await query('ALTER TABLE demandes_documents_contractuels ADD COLUMN preuve_paiement VARCHAR(80) NULL AFTER clauses_snapshot');
+  }
+  const archiveColumns = [
+    ['archive_filename', 'VARCHAR(80) NULL AFTER preuve_paiement'],
+    ['archive_sha256', 'CHAR(64) NULL AFTER archive_filename'],
+    ['archive_generated_at', 'DATETIME NULL AFTER archive_sha256'],
+  ];
+  for (const [name, definition] of archiveColumns) {
+    const column = await query(
+      `SHOW COLUMNS FROM demandes_documents_contractuels LIKE '${name}'`
+    );
+    if (!column.length) {
+      await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
+    }
   }
 }
 
@@ -72,6 +107,8 @@ function validateData(type, profile, data) {
     .filter(([key, value]) => typeof value !== 'string' || value.length > 4000)
     .map(([key]) => key);
   const missing = required.filter((key) => !String(data?.[key] ?? '').trim());
+  const invalidNames = ['nom_demandeur', 'nom_autre_partie']
+    .filter((key) => String(data?.[key] || '').length > 150);
   const invalidIdentityFields = [];
   for (const key of ['cin_demandeur', 'cin_autre_partie']) {
     const value = String(data?.[key] ?? '');
@@ -81,7 +118,7 @@ function validateData(type, profile, data) {
     const value = String(data?.[key] ?? '');
     if (value && !/^\+?\d{1,13}$/.test(value)) invalidIdentityFields.push(key);
   }
-  return [...new Set([...missing, ...invalid, ...invalidIdentityFields])];
+  return [...new Set([...missing, ...invalid, ...invalidIdentityFields, ...invalidNames])];
 }
 
 async function resolvePrice(type) {
@@ -227,6 +264,216 @@ function documentHtml({ reference, type, profile, data, clauses, preview = false
   </section>
   ${signaturePage}
   </body></html>`;
+}
+
+function documentPdfBuffer({ reference, type, profile, data, clauses }, password, ownerPassword) {
+  return new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({
+      size: 'A4',
+      margin: { top: 48, right: 48, bottom: 86, left: 48 },
+      bufferPages: true,
+      pdfVersion: password ? '1.7ext3' : '1.7',
+      ...(password ? {
+        userPassword: password,
+        ownerPassword,
+        permissions: {
+          printing: 'highResolution',
+          modifying: false,
+          copying: false,
+          annotating: false,
+          fillingForms: false,
+          contentAccessibility: false,
+          documentAssembly: false,
+        },
+      } : {}),
+    });
+    const chunks = [];
+    pdf.on('data', (chunk) => chunks.push(chunk));
+    pdf.on('error', reject);
+    pdf.on('end', () => resolve(Buffer.concat(chunks)));
+    pdf.info.Title = `${type === 'edl' ? 'État des lieux' : 'Contrat de location'} ${reference}`;
+    pdf.info.Author = String(data.nom_demandeur || 'Coloc’KOO');
+    pdf.info.Subject = `Document contractuel ${reference}`;
+    pdf.info.Creator = 'Coloc’KOO';
+    pdf.info.CreationDate = new Date();
+
+    const title = type === 'edl' ? 'ÉTAT DES LIEUX' : 'CONTRAT DE LOCATION / COLOCATION';
+    const otherRole = profile === 'locataire' ? 'Propriétaire / bailleur' : 'Locataire / autre partie';
+    const field = (label, value) => {
+      pdf.font('Helvetica-Bold').text(`${label} : `, { continued: true });
+      pdf.font('Helvetica').text(String(value || '—'));
+      pdf.moveDown(0.25);
+    };
+    const section = (heading) => {
+      pdf.moveDown(0.5);
+      pdf.font('Helvetica-Bold').fontSize(13).fillColor('#243746').text(heading);
+      pdf.moveTo(48, pdf.y + 3).lineTo(547, pdf.y + 3).strokeColor('#85cbd6').stroke();
+      pdf.moveDown(0.5).font('Helvetica').fontSize(10).fillColor('#17212b');
+    };
+
+    pdf.font('Helvetica-Bold').fontSize(18).fillColor('#243746').text(title, { align: 'center' });
+    pdf.moveDown(0.4).font('Helvetica').fontSize(9).fillColor('#667085')
+      .text(`Référence ${reference} · Profil : ${profile}`, { align: 'center' });
+
+    if (profile === 'professionnel') {
+      section('Professionnel');
+      field('Entreprise', data.nom_entreprise);
+      field('NIF / identifiant', data.nif);
+      field('Représentant', data.representant);
+    }
+
+    section('Parties');
+    field('Demandeur', data.nom_demandeur);
+    field('CIN / identifiant', data.cin_demandeur);
+    field('Téléphone', data.telephone_demandeur);
+    field('E-mail', data.email_demandeur);
+    field(otherRole, data.nom_autre_partie);
+    field('CIN / identifiant de l’autre partie', data.cin_autre_partie);
+    field('Téléphone de l’autre partie', data.telephone_autre_partie);
+    field('E-mail de l’autre partie', data.email_autre_partie);
+
+    section('Logement');
+    field('Adresse', data.adresse);
+    field('Ville', data.ville);
+    field('Type de bien', data.type_bien);
+    field('Quartier', data.quartier);
+
+    if (type === 'contrat') {
+      section('Conditions de location');
+      field('Date d’entrée', data.date_entree);
+      field('Loyer mensuel (Ar)', data.loyer);
+      field('Charges mensuelles (Ar)', data.charges);
+      field('Dépôt de garantie (Ar)', data.caution);
+      field('Type de bail', data.type_bail);
+      field('Clause de solidarité', data.solidarite);
+    } else {
+      section('État des lieux — constat commun');
+      pdf.text('Les parties déclarent avoir examiné ensemble les pièces, équipements et éléments du logement à la date du constat.');
+      pdf.moveDown(0.4);
+      field('Date du constat', data.date_entree);
+    }
+
+    section(type === 'edl' ? 'Clauses et éléments du constat' : 'Clauses retenues');
+    if (clauses.length) {
+      clauses.forEach((clause) => {
+        pdf.font('Helvetica-Bold').text(String(clause.titre || ''));
+        if (clause.description) pdf.font('Helvetica').text(String(clause.description));
+        pdf.moveDown(0.35);
+      });
+    } else {
+      pdf.text('Aucune clause complémentaire sélectionnée.');
+    }
+
+    section('Informations complémentaires');
+    pdf.text(String(data.observations || 'Aucune observation complémentaire.'));
+    if (type === 'edl') {
+      section('Pièces et équipements à vérifier');
+      pdf.text('Entrée · Séjour · Cuisine · Chambres · Salle de bain · Toilettes · Équipements · Compteurs');
+    }
+
+    pdf.addPage();
+    section('Signatures');
+    pdf.text(`Fait à ${String(data.ville || '—')}, le ____________________.`);
+    pdf.moveDown(2);
+    const signatureWidth = 230;
+    const signatureY = pdf.y;
+    pdf.font('Helvetica-Bold').text(String(data.nom_demandeur || 'Demandeur'), 48, signatureY, { width: signatureWidth });
+    pdf.font('Helvetica').text(profile, 48, signatureY + 15, { width: signatureWidth });
+    pdf.moveTo(48, signatureY + 100).lineTo(48 + signatureWidth, signatureY + 100).strokeColor('#52616b').stroke();
+    pdf.text('Signature', 48, signatureY + 105, { width: signatureWidth, align: 'center' });
+    pdf.font('Helvetica-Bold').text(String(data.nom_autre_partie || 'Autre partie'), 317, signatureY, { width: signatureWidth });
+    pdf.font('Helvetica').text(otherRole, 317, signatureY + 15, { width: signatureWidth });
+    pdf.moveTo(317, signatureY + 100).lineTo(547, signatureY + 100).strokeColor('#52616b').stroke();
+    pdf.text('Signature', 317, signatureY + 105, { width: signatureWidth, align: 'center' });
+    pdf.moveDown(9);
+    pdf.fontSize(8).fillColor('#667085').text('Document généré à partir des informations saisies par les parties. Les parties doivent vérifier son contenu avant signature.');
+
+    const pages = pdf.bufferedPageRange();
+    for (let pageIndex = pages.start; pageIndex < pages.start + pages.count; pageIndex += 1) {
+      pdf.switchToPage(pageIndex);
+      const footerY = pdf.page.height - 43;
+      pdf.save();
+      pdf.moveTo(48, footerY - 5).lineTo(pdf.page.width - 48, footerY - 5).strokeColor('#d6dde3').stroke();
+      pdf.font('Helvetica').fontSize(8).fillColor('#52616b')
+        .text(`Acheteur : ${String(data.nom_demandeur || '—')} · Référence de transaction : ${reference}`, 48, footerY, {
+          width: pdf.page.width - 96,
+          height: 20,
+          align: 'center',
+          lineBreak: false,
+      });
+      pdf.restore();
+    }
+    pdf.end();
+  });
+}
+
+function postScriptString(value) {
+  return String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+async function createPdfaArchive(document) {
+  const temporaryDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'colockoo-document-'));
+  const inputPath = path.join(temporaryDirectory, 'source.pdf');
+  const outputPath = path.join(temporaryDirectory, 'archive.pdf');
+  const definitionPath = path.join(temporaryDirectory, 'pdfa-definition.ps');
+  const iccProfile = process.env.PDF_A_ICC_PROFILE || '/usr/share/color/icc/ghostscript/default_rgb.icc';
+  const prefix = [
+    '%!',
+    `/ICCProfile (${postScriptString(iccProfile)}) def`,
+    '[/_objdef {icc_PDFA} /type /stream /OBJ pdfmark',
+    '[{icc_PDFA} << /N 3 >> /PUT pdfmark',
+    '[{icc_PDFA} ICCProfile (r) file /PUT pdfmark',
+    '[/_objdef {OutputIntent_PDFA} /type /dict /OBJ pdfmark',
+    '[{OutputIntent_PDFA} <<',
+    '/Type /OutputIntent',
+    '/S /GTS_PDFA1',
+    '/OutputConditionIdentifier (sRGB IEC61966-2.1)',
+    '/Info (sRGB IEC61966-2.1)',
+    '/RegistryName (http://www.color.org)',
+    '/DestOutputProfile {icc_PDFA}',
+    '>> /PUT pdfmark',
+    '[{Catalog} <</OutputIntents [ {OutputIntent_PDFA} ]>> /PUT pdfmark',
+  ].join('\n');
+
+  try {
+    await fs.promises.access(iccProfile, fs.constants.R_OK);
+    await fs.promises.writeFile(inputPath, await documentPdfBuffer(document), { mode: 0o600 });
+    await fs.promises.writeFile(definitionPath, prefix, { mode: 0o600 });
+    await execFileAsync(process.env.GS_BIN || 'gs', [
+      '-dPDFA=2',
+      '-dBATCH',
+      '-dNOPAUSE',
+      '-dPDFACompatibilityPolicy=1',
+      '-sDEVICE=pdfwrite',
+      '-sColorConversionStrategy=RGB',
+      '-dCompatibilityLevel=1.7',
+      `-sOutputFile=${outputPath}`,
+      `--permit-file-read=${iccProfile}`,
+      '-f',
+      definitionPath,
+      '-f',
+      inputPath,
+    ], { timeout: 120000, maxBuffer: 1024 * 1024 });
+    const archive = await fs.promises.readFile(outputPath);
+    if (!archive.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+      throw new Error('Ghostscript n’a pas généré une archive PDF/A valide.');
+    }
+    return archive;
+  } finally {
+    await fs.promises.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+async function savePdfaArchive(document) {
+  await fs.promises.mkdir(DOCUMENT_ARCHIVES_DIR, { recursive: true, mode: 0o700 });
+  const archive = await createPdfaArchive(document);
+  const filename = `${crypto.randomBytes(20).toString('hex')}.pdf`;
+  const archivePath = path.join(DOCUMENT_ARCHIVES_DIR, filename);
+  await fs.promises.writeFile(archivePath, archive, { flag: 'wx', mode: 0o600 });
+  return {
+    filename,
+    sha256: crypto.createHash('sha256').update(archive).digest('hex'),
+  };
 }
 
 async function createDraft(req, res, next) {
@@ -423,27 +670,60 @@ async function getDocument(req, res, next) {
   try {
     await ensureContractContent();
     await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    const password = req.body?.password;
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    if (typeof password !== 'string' || !/^[\x20-\x7e]{12,127}$/.test(password)) {
+      return res.status(400).json({ message: 'Le mot de passe doit contenir de 12 à 127 caractères ASCII visibles.' });
+    }
     const rows = await query(
-      'SELECT * FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1',
-      [req.params.id, currentUserId(req)]
+      `SELECT id_demande, reference, type_document, profil_demandeur, donnees,
+              clauses_ids, clauses_snapshot, statut, statut_paiement,
+              archive_filename, archive_sha256
+         FROM demandes_documents_contractuels
+        WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1`,
+      [id, currentUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const document = rows[0];
     if (document.statut !== 'valide' || document.statut_paiement !== 'conforme') {
       return res.status(403).json({ message: 'Le document sera disponible après validation du paiement par notre équipe.' });
     }
+    if (!/^[a-f0-9]{40}\.pdf$/.test(document.archive_filename || '') || !/^[a-f0-9]{64}$/.test(document.archive_sha256 || '')) {
+      return res.status(503).json({ message: 'L’archive du document n’est pas disponible. Contacte l’équipe Coloc’KOO.' });
+    }
+    const archivePath = path.join(DOCUMENT_ARCHIVES_DIR, document.archive_filename);
+    const archive = await fs.promises.readFile(archivePath);
+    const actualHash = crypto.createHash('sha256').update(archive).digest('hex');
+    if (actualHash !== document.archive_sha256) {
+      return res.status(500).json({ message: 'L’empreinte de l’archive ne correspond pas. Le téléchargement est suspendu pour vérification.' });
+    }
     const data = parseJson(document.donnees, {});
     const snapshot = parseJson(document.clauses_snapshot, null);
     const clauses = Array.isArray(snapshot)
       ? snapshot
       : await getSelectedClauses(parseJson(document.clauses_ids, []));
-    res.type('html').send(documentHtml({
+    const encryptedPdf = await documentPdfBuffer({
       reference: document.reference,
       type: document.type_document,
       profile: document.profil_demandeur,
       data,
       clauses,
-    }));
+    }, password, crypto.randomBytes(32).toString('base64url'));
+    const deliveryHash = crypto.createHash('sha256').update(encryptedPdf).digest('hex');
+    await query(
+      `INSERT INTO empreintes_documents_contractuels
+        (id_demande, id_utilisateur, type_pdf, sha256)
+       VALUES (?, ?, 'copie_chiffree', ?)`,
+      [document.id_demande, currentUserId(req), deliveryHash]
+    );
+    res.set({
+      'Cache-Control': 'private, no-store',
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${document.reference.replace(/[^A-Za-z0-9_-]/g, '')}.pdf"`,
+      'Content-Length': encryptedPdf.length,
+    });
+    res.send(encryptedPdf);
   } catch (err) {
     next(err);
   }
@@ -466,7 +746,13 @@ async function listBackoffice(req, res, next) {
     ]);
     const clausesById = new Map(clauseRows.map((clause) => [Number(clause.id_clause), clause]));
     res.json(rows.map((row) => ({
-      ...(({ preuve_paiement: _proof, ...safeRow }) => safeRow)(row),
+      ...(({
+        preuve_paiement: _proof,
+        archive_filename: _archiveFilename,
+        archive_sha256: _archiveHash,
+        archive_generated_at: _archiveGeneratedAt,
+        ...safeRow
+      }) => safeRow)(row),
       donnees: parseJson(row.donnees, {}),
       clauses_ids: parseJson(row.clauses_ids, []),
       has_payment_proof: Boolean(row.preuve_paiement),
@@ -525,6 +811,7 @@ async function updateBackofficeClause(req, res, next) {
 
 async function updateBackoffice(req, res, next) {
   try {
+    await ensureContractContent();
     await ensureDocumentRequestsSchema();
     const id = Number(req.params.id);
     const { statut } = req.body;
@@ -532,18 +819,76 @@ async function updateBackoffice(req, res, next) {
     if (!['en-cours', 'valide', 'refuse'].includes(statut)) {
       return res.status(400).json({ message: 'Statut de demande invalide.' });
     }
-    const result = await query(
-      `UPDATE demandes_documents_contractuels
-          SET statut = ?,
-              statut_paiement = CASE
-                WHEN ? = 'valide' THEN 'conforme'
-                WHEN ? = 'refuse' THEN 'non-conforme'
-                ELSE statut_paiement
-              END
-        WHERE id_demande = ?`,
-      [statut, statut, statut, id]
-    );
-    if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
+    const rows = await query('SELECT * FROM demandes_documents_contractuels WHERE id_demande = ? LIMIT 1', [id]);
+    if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
+    const request = rows[0];
+    let savedArchive;
+    let archive;
+    if (statut === 'valide') {
+      if (/^[a-f0-9]{40}\.pdf$/.test(request.archive_filename || '') && /^[a-f0-9]{64}$/.test(request.archive_sha256 || '')) {
+        try {
+          const existingArchive = await fs.promises.readFile(path.join(DOCUMENT_ARCHIVES_DIR, request.archive_filename));
+          const existingHash = crypto.createHash('sha256').update(existingArchive).digest('hex');
+          if (existingHash === request.archive_sha256) {
+            archive = { filename: request.archive_filename, sha256: existingHash };
+          }
+        } catch (archiveError) {
+          if (archiveError.code !== 'ENOENT') throw archiveError;
+        }
+      }
+      if (!archive) {
+        const snapshot = parseJson(request.clauses_snapshot, null);
+        const clauses = Array.isArray(snapshot)
+          ? snapshot
+          : await getSelectedClauses(parseJson(request.clauses_ids, []));
+        archive = await savePdfaArchive({
+          reference: request.reference,
+          type: request.type_document,
+          profile: request.profil_demandeur,
+          data: parseJson(request.donnees, {}),
+          clauses,
+        });
+        savedArchive = archive.filename;
+      }
+    }
+
+    try {
+      await query(
+        `UPDATE demandes_documents_contractuels
+            SET statut = ?,
+                statut_paiement = CASE
+                  WHEN ? = 'valide' THEN 'conforme'
+                  WHEN ? = 'refuse' THEN 'non-conforme'
+                  ELSE statut_paiement
+                END,
+                archive_filename = ?,
+                archive_sha256 = ?,
+                archive_generated_at = CASE
+                  WHEN ? = 'valide' AND ? = 1 THEN CURRENT_TIMESTAMP
+                  WHEN ? = 'valide' THEN COALESCE(archive_generated_at, CURRENT_TIMESTAMP)
+                  ELSE archive_generated_at
+                END
+          WHERE id_demande = ?`,
+        [
+          statut,
+          statut,
+          statut,
+          archive?.filename || request.archive_filename || null,
+          archive?.sha256 || request.archive_sha256 || null,
+          statut,
+          savedArchive ? 1 : 0,
+          statut,
+          id,
+        ]
+      );
+    } catch (updateError) {
+      if (savedArchive) {
+        await fs.promises.unlink(path.join(DOCUMENT_ARCHIVES_DIR, savedArchive)).catch((cleanupError) => {
+          console.error('Impossible de supprimer une archive PDF/A non enregistrée :', cleanupError);
+        });
+      }
+      throw updateError;
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -565,4 +910,6 @@ module.exports = {
   validateData,
   documentHtml,
   getImageFormat,
+  documentPdfBuffer,
+  createPdfaArchive,
 };

@@ -32,6 +32,6 @@ router.get('/mine', controller.listMine);
 router.post('/preview', controller.preview);
 router.post('/', controller.createDraft);
 router.post('/:id/payment', receivePaymentProof, controller.submitPayment);
-router.get('/:id/document', controller.getDocument);
+router.post('/:id/document', controller.getDocument);
 
 module.exports = router;
