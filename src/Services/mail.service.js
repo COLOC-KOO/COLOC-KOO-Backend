@@ -51,6 +51,7 @@ function getTransporter() {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port,
     secure: port === 465, 
+    requireTLS: port === 587,
     auth: {
       user: process.env.SMTP_EMAIL,
       pass: process.env.SMTP_PASSWORD,
@@ -102,7 +103,7 @@ function actionButton(label, linkPath) {
   </p>`;
 }
 
-async function sendEmail(to, sujet, html, text) {
+async function sendEmail(to, sujet, html, text, attachments = []) {
   console.log('[mail] sendEmail() appele -> destinataire:', to, '| sujet:', sujet);
 
   if (!isConfigured()) {
@@ -118,11 +119,17 @@ async function sendEmail(to, sujet, html, text) {
   try {
     console.log('[mail] Tentative d\'envoi en cours...');
     const info = await getTransporter().sendMail({
-      from: process.env.MAIL_FROM || process.env.SMTP_EMAIL,
+      from: process.env.MAIL_FROM_ADDRESS
+        ? {
+            name: process.env.MAIL_FROM_NAME || "Coloc'KOO",
+            address: process.env.MAIL_FROM_ADDRESS,
+          }
+        : process.env.MAIL_FROM || process.env.SMTP_EMAIL,
       to: destinataires.join(', '),
       subject: sujet,
       html,
       text: text || undefined,
+      attachments,
     });
     console.log('[mail] ✅ Email envoye avec succes. Message ID :', info.messageId);
     return true;
