@@ -56,13 +56,17 @@ function splitPipe(value) {
 function mapAnnonceRow(row) {
   // 1. Détection intelligente de la valeur meublée (prend en compte 1, "1", "Oui", true, "meuble")
   const rawMeuble = row.meublee ?? row.est_meuble;
+  const rawMeubleNormalized = String(rawMeuble ?? '').trim().toLowerCase();
   const isFurnished = 
     rawMeuble === 1 || 
     rawMeuble === '1' || 
     rawMeuble === true || 
-    String(rawMeuble).toLowerCase() === 'oui' || 
-    String(rawMeuble).toLowerCase() === 'meuble' || 
-    String(rawMeuble).toLowerCase() === 'meublée';
+    ['oui', 'partiellement', 'rachat', 'meuble', 'meublée'].includes(rawMeubleNormalized);
+  const meubleDisplay = rawMeubleNormalized === 'partiellement'
+    ? 'Partiellement'
+    : rawMeubleNormalized === 'rachat'
+      ? 'Rachat'
+      : isFurnished ? 'Oui' : 'Non';
 
   return {
     id: row.id_annonce,
@@ -116,7 +120,7 @@ function mapAnnonceRow(row) {
     men_only: Boolean(row.men_only),
 
     // 💡 AJOUT : Tous les alias possibles pour garantir la transmission au frontend
-    meublee: isFurnished ? 'Oui' : 'Non',
+    meublee: meubleDisplay,
     furnished: isFurnished,
     est_meuble: isFurnished ? 1 : 0,
 
