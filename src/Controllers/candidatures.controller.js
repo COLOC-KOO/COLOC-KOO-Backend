@@ -8,6 +8,7 @@ const {
 const { ensureContractContent } = require('./meta.controller');
 const { insertInApp } = require('../Services/notify.service');
 const mail = require('../Services/mail.service');
+const { sendContractDocuments } = require('../Services/contract-pdf.service');
 
 const PROGRESS_STEPS = [
   { key: 'envoyee', label: 'Envoyee' },
@@ -1647,10 +1648,28 @@ async function lancerColocationOfficielle(req, res, next) {
     for (const c of contrats) {
       const parties = await query("SELECT id_utilisateur, role FROM parties_contrats WHERE id_contrat = ? AND id_utilisateur IS NOT NULL", [c.id_contrat]);
       const colocIds = parties.filter((p) => /coloc/i.test(p.role || '')).map((p) => Number(p.id_utilisateur));
-      const paid = await query("SELECT DISTINCT id_utilisateur FROM paiements WHERE id_contrat = ? AND service_type = 'contrat'", [c.id_contrat]);
+      const paid = await query("SELECT DISTINCT id_utilisateur FROM paiements WHERE id_contrat = ? AND service_type = 'contrat' AND statut IN ('conforme','valide')", [c.id_contrat]);
       const payerIds = paid.map((r) => Number(r.id_utilisateur));
       if (!colocIds.every((id) => payerIds.includes(id))) {
-        return res.status(400).json({ message: "Tous les colocataires n'ont pas encore réglé leur part." });
+        return res.status(400).json({ message: "Tous les paiements des colocataires doivent être vérifiés avant de lancer officiellement la colocation." });
+      }
+    }
+
+    const documentEmails = [];
+    for (const contrat of contrats) {
+      try {
+        const result = await sendContractDocuments(contrat.id_contrat);
+        documentEmails.push(result);
+        if (result.failures.length) {
+          return res.status(502).json({
+            message: `Envoi partiel des documents : ${result.sent}/${result.total} e-mail(s) envoyé(s).`,
+            failures: result.failures,
+          });
+        }
+      } catch (deliveryError) {
+        return res.status(deliveryError.status || 500).json({
+          message: `Impossible d’envoyer le document du contrat #${contrat.id_contrat} : ${deliveryError.message}`,
+        });
       }
     }
 
@@ -1662,9 +1681,10 @@ async function lancerColocationOfficielle(req, res, next) {
       console.error('[candidatures] Emails lancement officiel:', mailErr.message);
     }
     return res.json({
-      message: 'Colocation lancée officiellement ! L\'annonce est clôturée.',
+      message: 'Colocation lancée officiellement ! L\'annonce est clôturée et les PDF protégés ont été envoyés aux parties.',
       statut: 'terminee',
       emails: emailResult,
+      documentEmails,
     });
   } catch (err) {
     next(err);

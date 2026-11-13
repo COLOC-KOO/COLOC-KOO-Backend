@@ -26,89 +26,129 @@ const DEFAULT_CLAUSES = [
 ];
 let legacyClausesRepaired = false;
 const DEFAULT_OFFER = {
-  titre: 'Aide Ã  la crÃ©ation de contrats avec les colocataires',
-  texte: "Coloc'KOO peut rÃ©diger pour toi un contrat de colocation conforme, signÃ© entre les colocataires et/ou te proposer un document d'Ã©tat des lieux. Voici un aperÃ§u prÃ©-rempli avec leurs noms et l'adresse du bien :",
+  titre: 'Aide à la création de contrats avec les colocataires',
+  texte: "Coloc'KOO peut rédiger pour toi un contrat de colocation conforme, signé entre les colocataires et/ou te proposer un document d'état des lieux. Voici un aperçu pré-rempli avec leurs noms et l'adresse du bien :",
 };
 const DEFAULT_BODY = {
-  titre: "Contrat de colocation â€” Sarintany'COLOC",
-  intro: "Entre les soussignÃ©Â·eÂ·s : {names}, ci-aprÃ¨s dÃ©nommÃ©Â·eÂ·s Â« les colocataires Â»,\nPour le logement situÃ© : {address},\nDate d'entrÃ©e dans les lieux : {date}.",
-  corps: "Il a Ã©tÃ© convenu et arrÃªtÃ© ce qui suit. Article 1 â€” Objet : le prÃ©sent contrat a pour objet de dÃ©finir les rÃ¨gles de la vie commune et la rÃ©partitionâ€¦",
+  titre: "Contrat de colocation — Sarintany'COLOC",
+  intro: "Entre les soussigné·e·s : {names}, ci-après dénommé·e·s « les colocataires »,\nPour le logement situé : {address},\nDate d'entrée dans les lieux : {date}.",
+  corps: "Il a été convenu et arrêté ce qui suit. Article 1 — Objet : le présent contrat a pour objet de définir les règles de la vie commune et la répartition…",
 };
 const DEFAULT_BAIL = [
-  { cle: 'individuel', titre: 'Bail individuel', description: 'Chaque colocataire signe son propre contrat avec le propriÃ©taire.' },
-  { cle: 'collectif', titre: 'Bail collectif', description: "Un seul document signÃ© par l'ensemble des parties." },
+  { cle: 'individuel', titre: 'Bail individuel', description: 'Chaque colocataire signe son propre contrat avec le propriétaire.' },
+  { cle: 'collectif', titre: 'Bail collectif', description: "Un seul document signé par l'ensemble des parties." },
 ];
 const DEFAULT_SOLIDARITE = [
-  { cle: 'avec', titre: 'AVEC clause de solidaritÃ©', description: "Tous les colocataires sont solidaires : si l'un manque, les autres sont redevables de l'ensemble du loyer." },
-  { cle: 'sans', titre: 'SANS clause de solidaritÃ©', description: 'Chaque colocataire reste responsable de sa part seulement.' },
+  { cle: 'avec', titre: 'AVEC clause de solidarité', description: "Tous les colocataires sont solidaires : si l'un manque, les autres sont redevables de l'ensemble du loyer." },
+  { cle: 'sans', titre: 'SANS clause de solidarité', description: 'Chaque colocataire reste responsable de sa part seulement.' },
 ];
 const DEFAULT_MAIL_NOTE = {
-  contrat: "Le contrat finalisÃ© te sera envoyÃ© par e-mail Ã  {email}. Tu n'auras plus qu'Ã  le faire signer par l'ensemble des parties lors de la remise des clÃ©s. Pour complÃ©ter les informations nÃ©cessaires Ã  la rÃ©daction du contrat, rendez-vous dans ta messagerie.",
-  edl: "Le document te sera envoyÃ© par e-mail Ã  {email}. Tu n'auras plus qu'Ã  le faire signer par l'ensemble des parties lors de la remise des clÃ©s.",
+  contrat: "Le contrat finalisé te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés. Pour compléter les informations nécessaires à la rédaction du contrat, rendez-vous dans ta messagerie.",
+  edl: "Le document te sera envoyé par e-mail à {email}. Tu n'auras plus qu'à le faire signer par l'ensemble des parties lors de la remise des clés.",
 };
 // Gabarit HTML du vrai document de contrat (100% en base). Les {placeholders} sont
 // remplaces cote backend a partir des donnees reelles (parties, logement, adresse exacte...).
-const DEFAULT_DOCUMENT_TEMPLATE = `<h1>Contrat de colocation â€” Sarintany'COLOC</h1>
-<p class="ref">RÃ©fÃ©rence : {reference} â€” Fait Ã  {ville}, le {today}</p>
+const DEFAULT_DOCUMENT_TEMPLATE = `<h1>Contrat de colocation — Sarintany'COLOC</h1>
+<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
 
-<h2>Entre les soussignÃ©Â·eÂ·s</h2>
-<p>Le/La propriÃ©taire (bailleur) : <b>{proprietaire}</b></p>
+<h2>Entre les soussigné·e·s</h2>
+<p>Le/La propriétaire (bailleur) : <b>{proprietaire}</b></p>
 <p>Les colocataires (preneurs) : <b>{colocataires}</b></p>
 
-<h2>DÃ©signation du logement</h2>
+<h2>Désignation du logement</h2>
 <p>Adresse : <b>{adresse}</b>.</p>
 <p>Nature du bien : {type_bien}.</p>
-<p>Date d'entrÃ©e dans les lieux : <b>{date_entree}</b>.</p>
+<p>Date d'entrée dans les lieux : <b>{date_entree}</b>.</p>
 
 <h2>Conditions du bail</h2>
 <p>Type de bail : <b>{type_bail}</b>.</p>
 <p>{solidarite_phrase}</p>
-<p>Loyer mensuel : <b>{loyer} Ar</b> â€” Charges : <b>{charges} Ar</b> â€” DÃ©pÃ´t de garantie : <b>{caution} Ar</b>.</p>
+<p>Loyer mensuel : <b>{loyer} Ar</b> — Charges : <b>{charges} Ar</b> — Dépôt de garantie : <b>{caution} Ar</b>.</p>
 
-<h2>Article 1 â€” Objet</h2>
-<p>Le prÃ©sent contrat a pour objet de dÃ©finir les rÃ¨gles de la vie commune et la rÃ©partition des charges entre les colocataires du logement dÃ©signÃ© ci-dessus.</p>
+<h2>Article 1 — Objet</h2>
+<p>Le présent contrat a pour objet de définir les règles de la vie commune et la répartition des charges entre les colocataires du logement désigné ci-dessus.</p>
 
-<h2>Article 2 â€” Ã‰lÃ©ments du contrat</h2>
+<h2>Article 2 — Éléments du contrat</h2>
 {clauses_list}
 
-<h2>Article 3 â€” Ã‰tat des lieux</h2>
-<p>Un Ã©tat des lieux contradictoire est Ã©tabli Ã  l'entrÃ©e et Ã  la sortie du logement et annexÃ© au prÃ©sent contrat.</p>
+<h2>Article 3 — État des lieux</h2>
+<p>Un état des lieux contradictoire est établi à l'entrée et à la sortie du logement et annexé au présent contrat.</p>
 
 <h2>Signatures</h2>
 {signatures}`;
-const DEFAULT_EDL_TEMPLATE = `<h1>Ã‰tat des lieux â€” Sarintany'COLOC</h1>
-<p class="ref">RÃ©fÃ©rence : {reference} â€” Fait Ã  {ville}, le {today}</p>
+const DEFAULT_EDL_TEMPLATE = `<h1>État des lieux — Sarintany'COLOC</h1>
+<p class="ref">Référence : {reference} — Fait à {ville}, le {today}</p>
 
 <h2>Logement</h2>
 <p>Adresse : <b>{adresse}</b> ({type_bien}).</p>
 <p>Occupants : <b>{colocataires}</b>.</p>
-<p>Date d'entrÃ©e : <b>{date_entree}</b>.</p>
+<p>Date d'entrée : <b>{date_entree}</b>.</p>
 
 <h2>Constat</h2>
-<p>Le prÃ©sent document constate l'Ã©tat du logement et de ses Ã©quipements Ã  l'entrÃ©e et Ã  la sortie des lieux (constat contradictoire entre le propriÃ©taire et les colocataires).</p>
+<p>Le présent document constate l'état du logement et de ses équipements à l'entrée et à la sortie des lieux (constat contradictoire entre le propriétaire et les colocataires).</p>
 
 <h2>Signatures</h2>
 {signatures}`;
 
-async function getConfigValue(cle, fallback) {
-  try {
-    const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
-    if (!rows.length || rows[0].valeur == null) return fallback;
-    const raw = rows[0].valeur;
-    // La colonne JSON est deja parsee par mysql2. Si c'est une chaine, on tente
-    // un parse (double encodage) mais on renvoie la chaine telle quelle si ce
-    // n'est pas du JSON (ex : un gabarit HTML).
-    if (typeof raw === 'string') {
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return raw;
-      }
-    }
-    return raw;
-  } catch {
-    return fallback;
+const WINDOWS_1252_BYTES = new Map([
+  [0x20ac, 0x80], [0x201a, 0x82], [0x0192, 0x83], [0x201e, 0x84],
+  [0x2026, 0x85], [0x2020, 0x86], [0x2021, 0x87], [0x02c6, 0x88],
+  [0x2030, 0x89], [0x0160, 0x8a], [0x2039, 0x8b], [0x0152, 0x8c],
+  [0x017d, 0x8e], [0x2018, 0x91], [0x2019, 0x92], [0x201c, 0x93],
+  [0x201d, 0x94], [0x2022, 0x95], [0x2013, 0x96], [0x2014, 0x97],
+  [0x02dc, 0x98], [0x2122, 0x99], [0x0161, 0x9a], [0x203a, 0x9b],
+  [0x0153, 0x9c], [0x017e, 0x9e], [0x0178, 0x9f],
+]);
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+function repairMojibake(text) {
+  if (!/[ÃÂâð]/.test(text)) return text;
+  const bytes = [];
+  for (const character of text) {
+    const codePoint = character.codePointAt(0);
+    const byte = WINDOWS_1252_BYTES.get(codePoint) ?? (codePoint <= 0xff ? codePoint : null);
+    if (byte == null) return text;
+    bytes.push(byte);
   }
+  try {
+    const decoded = utf8Decoder.decode(Uint8Array.from(bytes));
+    return /[ÃÂâð]/.test(decoded) ? text : decoded;
+  } catch {
+    return text;
+  }
+}
+
+function repairConfigValue(value) {
+  if (typeof value === 'string') return repairMojibake(value);
+  if (Array.isArray(value)) return value.map(repairConfigValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      repairConfigValue(item),
+    ]));
+  }
+  return value;
+}
+
+async function getConfigValue(cle, fallback) {
+  const rows = await query('SELECT valeur FROM configuration_backoffice WHERE cle = ? LIMIT 1', [cle]);
+  if (!rows.length || rows[0].valeur == null) return fallback;
+  let value = rows[0].valeur;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // Plain text configuration values, including HTML templates, are valid.
+    }
+  }
+  const repaired = repairConfigValue(value);
+  if (JSON.stringify(repaired) !== JSON.stringify(value)) {
+    await query('UPDATE configuration_backoffice SET valeur = ? WHERE cle = ?', [
+      JSON.stringify(repaired),
+      cle,
+    ]);
+  }
+  return repaired;
 }
 
 // Cree la table des clauses + seed initial des clauses et des textes/bareme en config.

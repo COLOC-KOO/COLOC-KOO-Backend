@@ -1905,14 +1905,22 @@ async function backofficePaiements(req, res, next) {
 
 async function updatePaiementStatus(req, res, next) {
   try {
+    const paiementId = Number(req.params.id);
+    if (!/^\d+$/.test(req.params.id) || !Number.isSafeInteger(paiementId) || paiementId <= 0) {
+      return res.status(400).json({ message: 'Identifiant de paiement invalide.' });
+    }
     const { statut } = req.body;
     const allowed = ['a-verifier', 'conforme', 'non-conforme', 'en-attente', 'valide', 'echoue'];
     if (!allowed.includes(statut)) {
       return res.status(400).json({ message: 'Statut invalide.' });
     }
-    await query('UPDATE paiements SET statut = ? WHERE id_paiement = ?', [statut, req.params.id]);
-    await logAction(req, 'Correction', 'paiement', req.params.id, { statut });
-    res.json({ message: 'Paiement mis Ã  jour.' });
+    const paymentRows = await query('SELECT id_paiement FROM paiements WHERE id_paiement = ? LIMIT 1', [paiementId]);
+    if (!paymentRows.length) {
+      return res.status(404).json({ message: 'Paiement introuvable.' });
+    }
+    await query('UPDATE paiements SET statut = ? WHERE id_paiement = ?', [statut, paiementId]);
+    await logAction(req, 'Correction', 'paiement', paiementId, { statut });
+    res.json({ message: 'Paiement mis à jour.' });
   } catch (err) {
     next(err);
   }
