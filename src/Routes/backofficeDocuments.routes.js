@@ -8,6 +8,7 @@ router.post('/clauses', controller.createBackofficeClause);
 router.patch('/clauses/:id', controller.updateBackofficeClause);
 router.get('/', controller.listBackoffice);
 router.get('/:id/payment-proof', controller.getBackofficePaymentProof);
+router.get('/:id/document-preview', controller.getBackofficeDocumentPreview);
 router.patch('/:id', controller.updateBackoffice);
 
 module.exports = router;
