@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { pathToFileURL } = require('node:url');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const Docxtemplater = require('docxtemplater');
@@ -49,33 +50,72 @@ function renderContratsImmoDocx(templateId, data) {
   });
 }
 
+function converterDiagnostics(result) {
+  return [result && result.stderr, result && result.stdout]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 500);
+}
+
+function conversionFailed(message, { reason, stderr } = {}) {
+  const details = [message, stderr].filter(Boolean).join(' ');
+  const error = new Error(details);
+  error.code = 'PDF_CONVERSION_FAILED';
+  if (reason) error.reason = reason;
+  return error;
+}
+
 async function convertContratsImmoDocxToPdf(docxBuffer) {
   const workDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'colockoo-immo-'));
   const inputPath = path.join(workDirectory, 'document.docx');
   const outputPath = path.join(workDirectory, 'document.pdf');
+  const profileDirectory = path.join(workDirectory, 'lo-profile');
   const officeBinary = process.env.LIBREOFFICE_BIN || (process.platform === 'win32' ? 'soffice.exe' : 'soffice');
 
   try {
     await fs.promises.writeFile(inputPath, docxBuffer, { mode: 0o600 });
-    await execFileAsync(officeBinary, [
-      '--headless',
-      '--convert-to', 'pdf',
-      '--outdir', workDirectory,
-      inputPath,
-    ], { timeout: 120_000, windowsHide: true, maxBuffer: 1024 * 1024 });
 
-    const pdfBuffer = await fs.promises.readFile(outputPath);
+    let result;
+    try {
+      // Un profil LibreOffice par appel : deux conversions simultanées ne peuvent pas
+      // partager le même profil, la seconde rendrait la main sans produire de PDF.
+      result = await execFileAsync(officeBinary, [
+        '--headless',
+        `-env:UserInstallation=${pathToFileURL(profileDirectory).href}`,
+        '--convert-to', 'pdf',
+        '--outdir', workDirectory,
+        inputPath,
+      ], { timeout: 120_000, windowsHide: true, maxBuffer: 1024 * 1024 });
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        const unavailable = new Error('Le convertisseur Word vers PDF (LibreOffice) doit être installé sur le serveur.');
+        unavailable.code = 'LIBREOFFICE_NOT_INSTALLED';
+        throw unavailable;
+      }
+      const stderr = converterDiagnostics(error);
+      if (error.killed || error.signal) {
+        throw conversionFailed('La conversion Word vers PDF a été interrompue (délai dépassé ou arrêt du processus LibreOffice).', { reason: 'TIMEOUT', stderr });
+      }
+      throw conversionFailed('La conversion Word vers PDF a échoué (LibreOffice a renvoyé une erreur).', { reason: 'CONVERTER_ERROR', stderr });
+    }
+
+    const stderr = converterDiagnostics(result);
+    let pdfBuffer;
+    try {
+      pdfBuffer = await fs.promises.readFile(outputPath);
+    } catch (readError) {
+      if (readError.code !== 'ENOENT') throw readError;
+      throw conversionFailed(
+        'LibreOffice n’a produit aucun PDF (module Writer ou filtres Word/PDF manquants sur le serveur ?).',
+        { reason: 'NO_OUTPUT', stderr },
+      );
+    }
+
     if (!pdfBuffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
-      throw new Error('LibreOffice a produit un fichier qui ne semble pas être un PDF.');
+      throw conversionFailed('LibreOffice a produit un fichier qui ne semble pas être un PDF.', { reason: 'INVALID_OUTPUT', stderr });
     }
     return pdfBuffer;
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      const unavailable = new Error('Le convertisseur Word vers PDF (LibreOffice) doit être installé sur le serveur.');
-      unavailable.code = 'LIBREOFFICE_NOT_INSTALLED';
-      throw unavailable;
-    }
-    throw error;
   } finally {
     const tempRoot = `${path.resolve(os.tmpdir())}${path.sep}`;
     const resolvedWorkDirectory = path.resolve(workDirectory);

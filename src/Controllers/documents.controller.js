@@ -550,6 +550,30 @@ async function createEncryptedTemplatePdf(sourcePdf, password, ownerPassword) {
   }
 }
 
+async function renderPreviewPages(pdfBuffer) {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'colockoo-preview-'));
+  const inputPath = path.join(directory, 'preview.pdf');
+  const outputPattern = path.join(directory, 'page-%03d.png');
+
+  try {
+    await fs.promises.writeFile(inputPath, pdfBuffer, { mode: 0o600 });
+    await execFileAsync(process.env.GS_BIN || 'gs', [
+      '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET',
+      '-sDEVICE=png16m', '-r120', `-sOutputFile=${outputPattern}`, inputPath,
+    ], { timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true });
+
+    const files = (await fs.promises.readdir(directory))
+      .filter((name) => /^page-\d+\.png$/.test(name))
+      .sort();
+    if (!files.length) throw new Error('Ghostscript n’a rendu aucune page pour l’aperçu PDF.');
+    return await Promise.all(files.map(async (name) =>
+      (await fs.promises.readFile(path.join(directory, name))).toString('base64')
+    ));
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function createDraft(req, res, next) {
   let generatedArchive;
   try {
@@ -607,8 +631,11 @@ async function preview(req, res, next) {
     const missing = validateData(type, profile, data, resolvedTemplateId);
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
     const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'APERÇU' });
-    const encodedPdf = rendered.pdfBuffer.toString('base64');
-    res.type('html').send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>html,body,object{margin:0;width:100%;height:100%;border:0}</style></head><body><object data="data:application/pdf;base64,${encodedPdf}" type="application/pdf"><a href="data:application/pdf;base64,${encodedPdf}">Télécharger l’aperçu PDF</a></object></body></html>`);
+    // Le navigateur reçoit des pages image, pas le PDF éditable ni une visionneuse native.
+    const pages = await renderPreviewPages(rendered.pdfBuffer);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ pages });
   } catch (err) {
     next(err);
   }
