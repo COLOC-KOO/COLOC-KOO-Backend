@@ -2,6 +2,7 @@ const router = require('express').Router();
 const multer = require('multer');
 const controller = require('../Controllers/documents.controller');
 const { requireAuth } = require('../Middleware/auth.middleware');
+router.get('/download/:token', controller.downloadByToken);
 
 const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const uploadProof = multer({
@@ -29,9 +30,10 @@ function receivePaymentProof(req, res, next) {
 
 router.use(requireAuth);
 router.get('/mine', controller.listMine);
+router.post('/:id/download-link', controller.createDownloadLink);
+router.delete('/:id', controller.deleteMine);
 router.post('/preview', controller.preview);
 router.post('/', controller.createDraft);
 router.post('/:id/payment', receivePaymentProof, controller.submitPayment);
-router.post('/:id/document', controller.getDocument);
 
 module.exports = router;

@@ -13,6 +13,7 @@ const { TEMPLATES } = require('../Services/contrats-immo-template.service');
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
 const DOCUMENT_ARCHIVES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-archives');
+const DOCUMENT_DATA_KEY_PATH = path.join(__dirname, '..', '..', 'private_uploads', 'document-data.key');
 const execFileAsync = promisify(execFile);
 
 async function ensureDocumentRequestsSchema() {
@@ -49,7 +50,7 @@ async function ensureDocumentRequestsSchema() {
       id_empreinte BIGINT NOT NULL AUTO_INCREMENT,
       id_demande INT NOT NULL,
       id_utilisateur INT NOT NULL,
-      type_pdf ENUM('copie_chiffree') NOT NULL,
+      type_pdf VARCHAR(30) NOT NULL,
       sha256 CHAR(64) NOT NULL,
       date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id_empreinte),
@@ -57,6 +58,10 @@ async function ensureDocumentRequestsSchema() {
       KEY idx_empreintes_sha256 (sha256)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  const fingerprintType = await query("SHOW COLUMNS FROM empreintes_documents_contractuels LIKE 'type_pdf'");
+  if (String(fingerprintType[0]?.Type || '').toLowerCase().startsWith('enum(')) {
+    await query("ALTER TABLE empreintes_documents_contractuels MODIFY COLUMN type_pdf VARCHAR(30) NOT NULL");
+  }
   const snapshotColumn = await query(
     "SHOW COLUMNS FROM demandes_documents_contractuels LIKE 'clauses_snapshot'"
   );
@@ -83,6 +88,51 @@ async function ensureDocumentRequestsSchema() {
       await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
     }
   }
+  const deletedColumn = await query("SHOW COLUMNS FROM demandes_documents_contractuels LIKE 'client_deleted'");
+  if (!deletedColumn.length) {
+    await query("ALTER TABLE demandes_documents_contractuels ADD COLUMN client_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER archive_generated_at");
+  }
+  for (const [name, definition] of [
+    ['download_token_hash', 'CHAR(64) NULL AFTER client_deleted'],
+    ['download_token_expires_at', 'DATETIME NULL AFTER download_token_hash'],
+  ]) {
+    const column = await query(`SHOW COLUMNS FROM demandes_documents_contractuels LIKE '${name}'`);
+    if (!column.length) await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+async function documentDataKey() {
+  await fs.promises.mkdir(path.dirname(DOCUMENT_DATA_KEY_PATH), { recursive: true, mode: 0o700 });
+  try {
+    const key = await fs.promises.readFile(DOCUMENT_DATA_KEY_PATH);
+    if (key.length === 32) return key;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const key = crypto.randomBytes(32);
+  try {
+    await fs.promises.writeFile(DOCUMENT_DATA_KEY_PATH, key, { flag: 'wx', mode: 0o600 });
+    return key;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    return documentDataKey();
+  }
+}
+
+async function encryptRequestData(data) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', await documentDataKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  return JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
+}
+
+async function decryptRequestData(value) {
+  const envelope = parseJson(value, {});
+  if (!envelope?.v || !envelope.iv || !envelope.tag || !envelope.data) return envelope;
+  const decipher = crypto.createDecipheriv('aes-256-gcm', await documentDataKey(), Buffer.from(envelope.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8');
+  return JSON.parse(plain);
 }
 
 function currentUserId(req) {
@@ -106,7 +156,26 @@ function validateData(type, profile, data, templateId) {
     const entries = Object.entries(data || {});
     if (!entries.some(([, value]) => typeof value === 'string' ? value.trim() : Array.isArray(value) && value.length > 0)) return ['donnees'];
     if (entries.some(([, value]) => typeof value !== 'string' || value.length > 4000)) return ['donnees'];
-    return [];
+    const issues = [];
+    if (['autorisation_colocation', 'avenant_substitution'].includes(templateId)) {
+      const reduction = String(data.retribution_reduction_valeur || '').trim();
+      if (data.retribution_reduction === 'true' && reduction) {
+        const isRate = reduction.endsWith('%');
+        const amount = Number(reduction.replace(/[^\d.]/g, ''));
+        const rent = Number(data.loyer_total || data.loyer || 0);
+        if (!Number.isFinite(amount) || amount < 0 || (isRate ? amount > 10 : rent <= 0 || amount > rent * 0.1)) {
+          issues.push('retribution_reduction_valeur (maximum 10 % du loyer total)');
+        }
+      }
+      if (templateId === 'autorisation_colocation' && (data.regime_solidaire === 'false' || data.regime_solidaire === false) && data.retribution_marge === 'true') {
+        issues.push('retribution_marge (indisponible en régime individuel)');
+      }
+    }
+    if (templateId === 'mandat_gestion' && data.repartition_texte) {
+      const rows = String(data.repartition_texte).split(/\r?\n/).filter(Boolean);
+      if (rows.length > 7) issues.push('repartition_texte (7 lignes maximum)');
+    }
+    return issues;
   }
   const required = [
     'adresse', 'code_postal', 'ville', 'type_bien', 'nom_demandeur', 'telephone_demandeur',
@@ -139,8 +208,19 @@ function validateData(type, profile, data, templateId) {
     ];
     if (profile !== 'professionnel') tunnelRequired.push('date_naissance_demandeur', 'ville_naissance_demandeur', 'pays_naissance_demandeur');
     tunnelRequired.push('date_naissance_autre_partie', 'ville_naissance_autre_partie', 'pays_naissance_autre_partie');
-    if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article');
+    if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article', 'autorisation_signee');
+    if (profile === 'locataire' && data?.autorisation_signee !== 'oui') invalidTunnel.push('autorisation_signee');
+    if (profile === 'locataire') tunnelRequired.push('revision_date_anniversaire');
     for (const key of tunnelRequired) if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
+    if (data?.inclure_charte === 'oui') {
+      for (const key of ['tranquillite_21h_6h', 'invites_3_6', 'menage_planning', 'tabac_exterieur', 'tabac_interieur_communs', 'tabac_interieur_privatifs', 'tabac_espaces_designes']) {
+        if (!['oui', 'non', 'true', 'false'].includes(String(data?.[key] ?? '').toLowerCase())) invalidTunnel.push(key);
+      }
+      if (data?.tranquillite_21h_6h === 'non' && (!data.tranquillite_debut || !data.tranquillite_fin)) invalidTunnel.push('tranquillite_debut/fin');
+      if (data?.invites_3_6 === 'non' && !data.invites_limite_nuits) invalidTunnel.push('invites_limite_nuits');
+      if (data?.tabac_espaces_designes === 'oui' && !data.tabac_espaces) invalidTunnel.push('tabac_espaces');
+    }
+    if (data?.inclure_attestation_logement === 'oui' && profile === 'professionnel' && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
     if (!['Individuelle', 'Solidaire'].includes(data?.solidarite)) invalidTunnel.push('solidarite');
     if (!['oui', 'non'].includes(data?.meuble)) invalidTunnel.push('meuble');
@@ -151,10 +231,10 @@ function validateData(type, profile, data, templateId) {
     if (Number(data?.periodicite_revision) <= 0) invalidTunnel.push('periodicite_revision');
     if (Number(data?.jour_paiement) < 1 || Number(data?.jour_paiement) > 31) invalidTunnel.push('jour_paiement');
     const levels = String(data?.niveaux_texte || '').split(/\r?\n/).map((line) => line.split('|').map((part) => part.trim()));
-    if (!levels.length || levels.some((parts) => !parts[0] || !parts[1])) invalidTunnel.push('niveaux_texte');
+    if (!levels.length || levels.length > 3 || levels.some((parts) => !parts[0] || !parts[1])) invalidTunnel.push('niveaux_texte');
     if (data?.charges_avec === 'oui') {
       const charges = String(data?.charges_lignes_texte || '').split(/\r?\n/).map((line) => line.split('|').map((part) => part.trim()));
-      if (!charges.length || charges.some((parts) => !parts[0] || !/^\d+$/.test(parts[1] || ''))) invalidTunnel.push('charges_lignes_texte');
+      if (!charges.length || charges.length > 3 || charges.some((parts) => !parts[0] || !/^\d+$/.test(parts[1] || ''))) invalidTunnel.push('charges_lignes_texte');
     }
     if (profile === 'professionnel') {
       if (!String(data?.nom_proprietaire || '').trim()) invalidTunnel.push('nom_proprietaire');
@@ -462,7 +542,8 @@ function documentPdfBuffer({ reference, type, profile, data, clauses }, password
 }
 
 function postScriptString(value) {
-  return String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  return String(value).normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/[^\x20-\x7e]/g, '?')
+    .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
 async function createPdfaArchive(document) {
@@ -471,6 +552,7 @@ async function createPdfaArchive(document) {
   const outputPath = path.join(temporaryDirectory, 'archive.pdf');
   const definitionPath = path.join(temporaryDirectory, 'pdfa-definition.ps');
   const iccProfile = process.env.PDF_A_ICC_PROFILE || '/usr/share/color/icc/ghostscript/default_rgb.icc';
+  const mark = `Acheteur : ${document.buyer || '—'} · Transaction : ${document.transaction || '—'}`;
   const prefix = [
     '%!',
     `/ICCProfile (${postScriptString(iccProfile)}) def`,
@@ -487,6 +569,7 @@ async function createPdfaArchive(document) {
     '/DestOutputProfile {icc_PDFA}',
     '>> /PUT pdfmark',
     '[{Catalog} <</OutputIntents [ {OutputIntent_PDFA} ]>> /PUT pdfmark',
+    `<< /EndPage { pop pop gsave /Helvetica findfont 8 scalefont setfont 0.35 setgray 36 18 moveto (${postScriptString(mark)}) show grestore true } bind >> setpagedevice`,
   ].join('\n');
 
   try {
@@ -550,7 +633,7 @@ async function createEncryptedTemplatePdf(sourcePdf, password, ownerPassword) {
   }
 }
 
-async function renderPreviewPages(pdfBuffer) {
+async function renderPreviewPages(pdfBuffer, watermark = 'APERÇU Coloc KOO') {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'colockoo-preview-'));
   const inputPath = path.join(directory, 'preview.pdf');
   const outputPattern = path.join(directory, 'page-%03d.png');
@@ -559,14 +642,16 @@ async function renderPreviewPages(pdfBuffer) {
     await fs.promises.writeFile(inputPath, pdfBuffer, { mode: 0o600 });
     await execFileAsync(process.env.GS_BIN || 'gs', [
       '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET',
-      '-sDEVICE=png16m', '-r120', `-sOutputFile=${outputPattern}`, inputPath,
+      '-sDEVICE=png16m', '-r120', `-sOutputFile=${outputPattern}`,
+      '-c', `<< /EndPage { pop pop gsave /Helvetica findfont 9 scalefont setfont 0.45 setgray 36 18 moveto (${postScriptString(watermark)}) show grestore true } bind >> setpagedevice`,
+      '-f', inputPath,
     ], { timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true });
 
     const files = (await fs.promises.readdir(directory))
       .filter((name) => /^page-\d+\.png$/.test(name))
       .sort();
     if (!files.length) throw new Error('Ghostscript n’a rendu aucune page pour l’aperçu PDF.');
-    return await Promise.all(files.map(async (name) =>
+    return await Promise.all(files.slice(0, 2).map(async (name) =>
       (await fs.promises.readFile(path.join(directory, name))).toString('base64')
     ));
   } finally {
@@ -575,7 +660,6 @@ async function renderPreviewPages(pdfBuffer) {
 }
 
 async function createDraft(req, res, next) {
-  let generatedArchive;
   try {
     await ensureContractContent();
     await ensureDocumentRequestsSchema();
@@ -588,37 +672,29 @@ async function createDraft(req, res, next) {
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
     const clauses = await getSelectedClauses(clauseIds);
     const montant = await resolvePrice(type);
-    const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'DOC-PROVISOIRE' });
-    generatedArchive = await savePdfaArchive({ sourcePdfBuffer: rendered.pdfBuffer });
+    const encryptedData = await encryptRequestData(data);
     const id = await insertAndGetId(
       `INSERT INTO demandes_documents_contractuels
         (reference, id_utilisateur, type_document, template_id, profil_demandeur, donnees, clauses_ids, clauses_snapshot,
          archive_filename, archive_sha256, archive_generated_at, montant)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       [
         `DOC-${Date.now().toString().slice(-9)}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
         currentUserId(req),
         type,
         resolvedTemplateId,
         profile,
-        JSON.stringify({}),
+        encryptedData,
         JSON.stringify(clauses.map((clause) => clause.id_clause)),
         JSON.stringify(clauses),
-        generatedArchive.filename,
-        generatedArchive.sha256,
+        null,
+        null,
         montant,
       ]
     );
     const rows = await query('SELECT reference FROM demandes_documents_contractuels WHERE id_demande = ?', [id]);
     res.status(201).json({ id, reference: rows[0].reference, montant });
-  } catch (err) {
-    if (generatedArchive) {
-      await fs.promises.unlink(path.join(DOCUMENT_ARCHIVES_DIR, generatedArchive.filename)).catch((cleanupError) => {
-        console.error('Impossible de supprimer le document privé non rattaché à une demande :', cleanupError);
-      });
-    }
-    next(err);
-  }
+  } catch (err) { next(err); }
 }
 
 async function preview(req, res, next) {
@@ -632,7 +708,7 @@ async function preview(req, res, next) {
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
     const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'APERÇU' });
     // Le navigateur reçoit des pages image, pas le PDF éditable ni une visionneuse native.
-    const pages = await renderPreviewPages(rendered.pdfBuffer);
+    const pages = await renderPreviewPages(rendered.pdfBuffer, `APERÇU - ${data.nom_demandeur || data.demandeur_nom_complet || 'Coloc KOO'}`);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.json({ pages });
@@ -645,24 +721,37 @@ async function listMine(req, res, next) {
   try {
     await ensureDocumentRequestsSchema();
     const rows = await query(
-      `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees, clauses_ids,
+      `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees, clauses_ids, client_deleted,
               montant, statut, statut_paiement, moyen_paiement, preuve_paiement, date_creation
          FROM demandes_documents_contractuels
         WHERE id_utilisateur = ?
-        ORDER BY CASE WHEN statut = 'valide' AND statut_paiement = 'conforme' THEN 0 ELSE 1 END,
-                 date_creation DESC
+        ORDER BY date_creation DESC
         LIMIT 100`,
       [currentUserId(req)]
     );
-    res.json(rows.map(({ preuve_paiement: proof, ...row }) => ({
+    res.json(rows.filter((row) => !row.client_deleted).map(({ preuve_paiement: proof, ...row }) => ({
       ...row,
-      donnees: parseJson(row.donnees, {}),
+      donnees: {},
       clauses_ids: parseJson(row.clauses_ids, []),
       has_payment_proof: Boolean(proof),
     })));
   } catch (err) {
     next(err);
   }
+}
+
+async function deleteMine(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    const result = await query(
+      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
+      [JSON.stringify({}), id, currentUserId(req)]
+    );
+    if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 }
 
 async function submitPayment(req, res, next) {
@@ -807,11 +896,7 @@ async function getDocument(req, res, next) {
     await ensureContractContent();
     await ensureDocumentRequestsSchema();
     const id = Number(req.params.id);
-    const password = req.body?.password;
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
-    if (typeof password !== 'string' || !/^[\x20-\x7e]{12,127}$/.test(password)) {
-      return res.status(400).json({ message: 'Le mot de passe doit contenir de 12 à 127 caractères ASCII visibles.' });
-    }
     const rows = await query(
       `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees,
               clauses_ids, clauses_snapshot, statut, statut_paiement,
@@ -834,28 +919,82 @@ async function getDocument(req, res, next) {
     if (actualHash !== document.archive_sha256) {
       return res.status(500).json({ message: 'L’empreinte de l’archive ne correspond pas. Le téléchargement est suspendu pour vérification.' });
     }
-    const encryptedPdf = await createEncryptedTemplatePdf(
-      archive,
-      password,
-      crypto.randomBytes(32).toString('base64url')
-    );
-    const deliveryHash = crypto.createHash('sha256').update(encryptedPdf).digest('hex');
+    const deliveryHash = actualHash;
     await query(
       `INSERT INTO empreintes_documents_contractuels
         (id_demande, id_utilisateur, type_pdf, sha256)
-       VALUES (?, ?, 'copie_chiffree', ?)`,
+       VALUES (?, ?, 'pdf_livre', ?)`,
       [document.id_demande, currentUserId(req), deliveryHash]
     );
     res.set({
       'Cache-Control': 'private, no-store',
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${document.reference.replace(/[^A-Za-z0-9_-]/g, '')}.pdf"`,
-      'Content-Length': encryptedPdf.length,
+      'Content-Length': archive.length,
     });
-    res.send(encryptedPdf);
+    res.send(archive);
   } catch (err) {
     next(err);
   }
+}
+
+async function createDownloadLink(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    const rows = await query(
+      `SELECT id_demande FROM demandes_documents_contractuels
+        WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0
+          AND statut = 'valide' AND statut_paiement = 'conforme'
+          AND archive_filename IS NOT NULL AND archive_sha256 IS NOT NULL LIMIT 1`,
+      [id, currentUserId(req)]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Document validé introuvable.' });
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    await query(
+      'UPDATE demandes_documents_contractuels SET download_token_hash = ?, download_token_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 15 MINUTE) WHERE id_demande = ?',
+      [tokenHash, id]
+    );
+    res.json({ token, expires_in_seconds: 900 });
+  } catch (err) { next(err); }
+}
+
+async function downloadByToken(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const token = String(req.params.token || '');
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return res.status(404).json({ message: 'Lien de téléchargement invalide ou expiré.' });
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const rows = await query(
+      `SELECT id_demande, id_utilisateur, reference, archive_filename, archive_sha256
+         FROM demandes_documents_contractuels
+        WHERE download_token_hash = ? AND download_token_expires_at > UTC_TIMESTAMP()
+          AND client_deleted = 0 AND statut = 'valide' AND statut_paiement = 'conforme' LIMIT 1`,
+      [tokenHash]
+    );
+    const row = rows[0];
+    if (!row || !/^[a-f0-9]{40}\.pdf$/.test(row.archive_filename || '') || !/^[a-f0-9]{64}$/.test(row.archive_sha256 || '')) {
+      return res.status(404).json({ message: 'Lien de téléchargement invalide ou expiré.' });
+    }
+    const archive = await fs.promises.readFile(path.join(DOCUMENT_ARCHIVES_DIR, row.archive_filename));
+    if (crypto.createHash('sha256').update(archive).digest('hex') !== row.archive_sha256) {
+      return res.status(500).json({ message: 'L’empreinte de l’archive ne correspond pas.' });
+    }
+    await query(
+      `INSERT INTO empreintes_documents_contractuels (id_demande, id_utilisateur, type_pdf, sha256)
+       VALUES (?, ?, 'pdf_livre', ?)`,
+      [row.id_demande, row.id_utilisateur, row.archive_sha256]
+    );
+    res.set({
+      'Cache-Control': 'private, no-store',
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${row.reference.replace(/[^A-Za-z0-9_-]/g, '')}.pdf"`,
+      'Content-Length': archive.length,
+    });
+    res.send(archive);
+  } catch (err) { next(err); }
 }
 
 async function listBackoffice(req, res, next) {
@@ -864,9 +1003,10 @@ async function listBackoffice(req, res, next) {
     await ensureDocumentRequestsSchema();
     const [rows, clauseRows] = await Promise.all([
       query(
-        `SELECT d.*, u.nom, u.prenom, u.email
+      `SELECT d.*, u.nom, u.prenom, u.email
            FROM demandes_documents_contractuels d
            LEFT JOIN utilisateurs u ON u.id_utilisateur = d.id_utilisateur
+          WHERE d.client_deleted = 0
           ORDER BY CASE WHEN d.statut = 'valide' AND d.statut_paiement = 'conforme' THEN 0 ELSE 1 END,
                    d.date_creation DESC
           LIMIT 500`
@@ -874,7 +1014,7 @@ async function listBackoffice(req, res, next) {
       query('SELECT id_clause, titre, description FROM contrat_clauses'),
     ]);
     const clausesById = new Map(clauseRows.map((clause) => [Number(clause.id_clause), clause]));
-    res.json(rows.map((row) => ({
+    res.json(await Promise.all(rows.map(async (row) => ({
       ...(({
         preuve_paiement: _proof,
         archive_filename: _archiveFilename,
@@ -882,12 +1022,13 @@ async function listBackoffice(req, res, next) {
         archive_generated_at: _archiveGeneratedAt,
         ...safeRow
       }) => safeRow)(row),
-      donnees: parseJson(row.donnees, {}),
+      donnees: await decryptRequestData(row.donnees),
       clauses_ids: parseJson(row.clauses_ids, []),
       has_payment_proof: Boolean(row.preuve_paiement),
+      has_archive: Boolean(row.archive_filename && row.archive_sha256),
       clauses: parseJson(row.clauses_snapshot, null) ||
         parseJson(row.clauses_ids, []).map((id) => clausesById.get(Number(id))).filter(Boolean),
-    })));
+    }))));
   } catch (err) {
     next(err);
   }
@@ -951,10 +1092,17 @@ async function updateBackoffice(req, res, next) {
     const rows = await query('SELECT * FROM demandes_documents_contractuels WHERE id_demande = ? LIMIT 1', [id]);
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const request = rows[0];
+    if (request.client_deleted) return res.status(404).json({ message: 'Demande introuvable.' });
+    if (statut === 'valide' && !['a-verifier', 'en-cours', 'valide'].includes(request.statut)) {
+      return res.status(409).json({ message: 'Le paiement doit être soumis puis vérifié avant de valider le document.' });
+    }
+    if (statut === 'valide' && request.statut !== 'valide' && request.statut_paiement !== 'a-verifier') {
+      return res.status(409).json({ message: 'Le paiement doit être confirmé par l’équipe avant de générer le document final.' });
+    }
     let savedArchive;
     let archive;
     if (statut === 'valide') {
-      if (/^[a-f0-9]{40}\.pdf$/.test(request.archive_filename || '') && /^[a-f0-9]{64}$/.test(request.archive_sha256 || '')) {
+      if (request.statut === 'valide' && /^[a-f0-9]{40}\.pdf$/.test(request.archive_filename || '') && /^[a-f0-9]{64}$/.test(request.archive_sha256 || '')) {
         try {
           const existingArchive = await fs.promises.readFile(path.join(DOCUMENT_ARCHIVES_DIR, request.archive_filename));
           const existingHash = crypto.createHash('sha256').update(existingArchive).digest('hex');
@@ -971,9 +1119,14 @@ async function updateBackoffice(req, res, next) {
           type: request.type_document,
           templateId: request.template_id,
           profile: request.profil_demandeur,
-          data: parseJson(request.donnees, {}),
+          data: await decryptRequestData(request.donnees),
         });
-        archive = await savePdfaArchive({ sourcePdfBuffer: rendered.pdfBuffer });
+        const buyerRows = await query('SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [request.id_utilisateur]);
+        archive = await savePdfaArchive({
+          sourcePdfBuffer: rendered.pdfBuffer,
+          buyer: [buyerRows[0]?.prenom, buyerRows[0]?.nom].filter(Boolean).join(' '),
+          transaction: request.reference_operateur || request.reference,
+        });
         savedArchive = archive.filename;
       }
     }
@@ -989,6 +1142,7 @@ async function updateBackoffice(req, res, next) {
                 END,
                 archive_filename = ?,
                 archive_sha256 = ?,
+                donnees = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_OBJECT() ELSE donnees END,
                 archive_generated_at = CASE
                   WHEN ? = 'refuse' THEN NULL
                   WHEN ? = 'valide' AND ? = 1 THEN CURRENT_TIMESTAMP
@@ -1002,6 +1156,7 @@ async function updateBackoffice(req, res, next) {
           statut,
           statut === 'refuse' ? null : archive?.filename || request.archive_filename || null,
           statut === 'refuse' ? null : archive?.sha256 || request.archive_sha256 || null,
+          statut,
           statut,
           statut,
           savedArchive ? 1 : 0,
@@ -1032,8 +1187,11 @@ module.exports = {
   createDraft,
   preview,
   listMine,
+  deleteMine,
   submitPayment,
   getDocument,
+  createDownloadLink,
+  downloadByToken,
   listBackoffice,
   listBackofficeClauses,
   createBackofficeClause,
