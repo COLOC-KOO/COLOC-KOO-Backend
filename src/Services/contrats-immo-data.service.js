@@ -93,6 +93,21 @@ async function combinePdfBuffers(pdfBuffers) {
   }
 }
 
+function annexCoverPdf(title) {
+  return new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({ size: 'A4', margin: 54 });
+    const chunks = [];
+    pdf.on('data', (chunk) => chunks.push(chunk));
+    pdf.on('error', reject);
+    pdf.on('end', () => resolve(Buffer.concat(chunks)));
+    pdf.font('Helvetica-Bold').fontSize(18).fillColor('#243746')
+      .text(title, 54, 340, { width: 487, align: 'center' });
+    pdf.font('Helvetica').fontSize(10).fillColor('#667085')
+      .text('Document signé joint au contrat de colocation.', 54, 390, { width: 487, align: 'center' });
+    pdf.end();
+  });
+}
+
 function cashReceiptPdf(data) {
   return new Promise((resolve, reject) => {
     const pdf = new PDFDocument({ size: 'A4', margin: 40 });
@@ -284,11 +299,13 @@ async function renderContratsImmoPdf(options) {
   const edlFields = buildTemplateData({ ...options, type: 'edl' });
   const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields);
   const edlPdf = await convertContratsImmoDocxToPdf(edlDocx);
-  const documents = [
-    ...(Array.isArray(options.annexes) ? options.annexes.filter((buffer) => Buffer.isBuffer(buffer)) : []),
-    mainPdf,
-    edlPdf,
-  ];
+  const documents = [];
+  for (const annex of Array.isArray(options.annexes) ? options.annexes : []) {
+    if (!Buffer.isBuffer(annex?.pdfBuffer)) continue;
+    if (annex.title) documents.push(await annexCoverPdf(annex.title));
+    documents.push(annex.pdfBuffer);
+  }
+  documents.push(mainPdf, edlPdf);
   const templateIds = [templateId, 'etat_des_lieux'];
   for (const [field, auxiliaryId] of [['inclure_charte', 'charte_colocation'], ['inclure_attestation_logement', 'attestation_logement']]) {
     if (options.data?.[field] !== 'oui') continue;

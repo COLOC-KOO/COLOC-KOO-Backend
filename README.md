@@ -113,6 +113,18 @@ téléchargement. L’historique client permet de demander un nouveau lien et de
 demande de sa liste. La suppression masque la demande et efface ses réponses, tout en conservant
 l’archive contractuelle et son empreinte côté Coloc’KOO.
 
+Pour un contrat Intercolocs, la copie PDF de l’Autorisation signée est obligatoire et jointe au
+contrat. Pour un Mandacolocs, le Mandat de gestion signé est obligatoire et placé en annexe 0.
+Ces annexes sont stockées dans `private_uploads/document-annexes` durant le traitement puis
+supprimées après validation, refus ou suppression client. L’état des lieux est joint
+automatiquement ; la charte, l’attestation de logement et l’attestation espèces sont générées
+depuis les réponses de la même session quand elles sont sélectionnées. L’attestation espèces
+comporte deux exemplaires préremplis ; la quittance reste un modèle vierge téléchargeable.
+
+Pour plusieurs Sous-occupants, chaque contrat dispose de sa propre demande et de son paiement.
+Le bouton de demande suivante conserve les réponses communes en mémoire et vide les huit champs
+d’identité du Sous-occupant précédent.
+
 ## Envoi des contrats de colocation
 
 Lors du lancement officiel de la colocation, le backend envoie automatiquement les PDF

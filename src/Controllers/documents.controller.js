@@ -756,10 +756,10 @@ async function deleteMine(req, res, next) {
     await ensureDocumentRequestsSchema();
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
-    const rows = await query('SELECT autorisation_filename, mandat_filename FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0 LIMIT 1', [id, currentUserId(req)]);
+    const rows = await query('SELECT autorisation_filename, mandat_filename, preuve_paiement FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0 LIMIT 1', [id, currentUserId(req)]);
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const result = await query(
-      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
+      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL, preuve_paiement = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
       [JSON.stringify({}), id, currentUserId(req)]
     );
     if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
@@ -767,6 +767,9 @@ async function deleteMine(req, res, next) {
       if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
         await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
       }
+    }
+    if (/^[a-f0-9]{40}\.(png|jpg|webp)$/.test(rows[0].preuve_paiement || '')) {
+      await fs.promises.unlink(path.join(PAYMENT_PROOFS_DIR, rows[0].preuve_paiement)).catch(() => {});
     }
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -801,7 +804,12 @@ async function uploadSignedAnnex(req, res, next) {
     savedPath = path.join(DOCUMENT_ANNEXES_DIR, filename);
     await fs.promises.writeFile(savedPath, req.file.buffer, { flag: 'wx', mode: 0o600 });
     const column = annexType === 'autorisation' ? 'autorisation_filename' : 'mandat_filename';
-    await query(`UPDATE demandes_documents_contractuels SET ${column} = ? WHERE id_demande = ? AND statut = 'brouillon'`, [filename, id]);
+    const result = await query(`UPDATE demandes_documents_contractuels SET ${column} = ? WHERE id_demande = ? AND id_utilisateur = ? AND statut = 'brouillon'`, [filename, id, currentUserId(req)]);
+    if (!result.affectedRows) {
+      const error = new Error('La demande n’est plus modifiable.');
+      error.status = 409;
+      throw error;
+    }
     const previous = annexType === 'autorisation' ? request.autorisation_filename : request.mandat_filename;
     if (/^[a-f0-9]{40}\.pdf$/.test(previous || '')) {
       await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, previous)).catch(() => {});
@@ -845,7 +853,17 @@ async function submitPayment(req, res, next) {
       return res.status(400).json({ message: 'Ajoutez le Mandat de gestion signé avant le paiement.' });
     }
     for (const filename of [rows[0].autorisation_filename, rows[0].mandat_filename]) {
-      if (filename) await fs.promises.access(path.join(DOCUMENT_ANNEXES_DIR, filename));
+      if (filename) {
+        if (!/^[a-f0-9]{40}\.pdf$/.test(filename)) {
+          return res.status(409).json({ message: 'Une annexe signée est introuvable. Ajoutez-la de nouveau avant le paiement.' });
+        }
+        try {
+          await fs.promises.access(path.join(DOCUMENT_ANNEXES_DIR, filename));
+        } catch (error) {
+          if (error.code === 'ENOENT') return res.status(409).json({ message: 'Une annexe signée est introuvable. Ajoutez-la de nouveau avant le paiement.' });
+          throw error;
+        }
+      }
     }
     const duplicateReferences = await query(
       `SELECT id_demande FROM demandes_documents_contractuels
@@ -1089,6 +1107,8 @@ async function listBackoffice(req, res, next) {
         archive_filename: _archiveFilename,
         archive_sha256: _archiveHash,
         archive_generated_at: _archiveGeneratedAt,
+        autorisation_filename: _authorizationFilename,
+        mandat_filename: _managementMandateFilename,
         ...safeRow
       }) => safeRow)(row),
       donnees: await decryptRequestData(row.donnees),
@@ -1190,8 +1210,10 @@ async function updateBackoffice(req, res, next) {
           profile: request.profil_demandeur,
           data: await decryptRequestData(request.donnees),
           annexes: await Promise.all([
-            request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename)),
-            request.autorisation_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.autorisation_filename)),
+            request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename))
+              .then((pdfBuffer) => ({ title: 'ANNEXE 0 : MANDAT DE GESTION', pdfBuffer })),
+            request.autorisation_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.autorisation_filename))
+              .then((pdfBuffer) => ({ title: 'AUTORISATION DE COLOCATION', pdfBuffer })),
           ].filter(Boolean)),
         });
         const buyerRows = await query('SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [request.id_utilisateur]);
@@ -1223,7 +1245,8 @@ async function updateBackoffice(req, res, next) {
                   ELSE archive_generated_at
                 END,
                 autorisation_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE autorisation_filename END,
-                mandat_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE mandat_filename END
+                mandat_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE mandat_filename END,
+                preuve_paiement = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE preuve_paiement END
           WHERE id_demande = ?`,
         [
           statut,
@@ -1238,6 +1261,7 @@ async function updateBackoffice(req, res, next) {
           statut,
           statut,
           statut,
+          statut,
           id,
         ]
       );
@@ -1246,6 +1270,9 @@ async function updateBackoffice(req, res, next) {
           if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
             await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
           }
+        }
+        if (/^[a-f0-9]{40}\.(png|jpg|webp)$/.test(request.preuve_paiement || '')) {
+          await fs.promises.unlink(path.join(PAYMENT_PROOFS_DIR, request.preuve_paiement)).catch(() => {});
         }
       }
     } catch (updateError) {
