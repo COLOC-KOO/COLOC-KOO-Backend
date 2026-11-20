@@ -29,6 +29,21 @@ function receivePaymentProof(req, res, next) {
 }
 
 router.use(requireAuth);
+const uploadSignedPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter(_req, file, callback) {
+    if (file.mimetype !== 'application/pdf') return callback(new Error('L’annexe doit être un fichier PDF.'));
+    callback(null, true);
+  },
+});
+router.post('/:id/annexes/:type', (req, res, next) => {
+  uploadSignedPdf.single('document')(req, res, (error) => {
+    if (error) return res.status(error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+      .json({ message: error.code === 'LIMIT_FILE_SIZE' ? 'Le PDF ne doit pas dépasser 15 Mo.' : error.message });
+    next();
+  });
+}, controller.uploadSignedAnnex);
 router.get('/mine', controller.listMine);
 router.post('/:id/download-link', controller.createDownloadLink);
 router.delete('/:id', controller.deleteMine);

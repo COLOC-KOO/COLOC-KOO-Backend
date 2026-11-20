@@ -105,9 +105,13 @@ function cashReceiptPdf(data) {
       pdf.font('Helvetica').fontSize(10);
       pdf.text(`Remettant : ${data.nom_demandeur || ''}`, 55, top + 38);
       pdf.text(`Beneficiaire : ${data.nom_autre_partie || ''}`, 55, top + 57);
-      pdf.text('Montant remis : __________________________________________ Ariary', 55, top + 85);
-      pdf.text('Motif : ___________________________________________________', 55, top + 108);
-      pdf.text('Fait a ______________________________, le ____ / ____ / ______', 55, top + 131);
+      const amount = String(data.especes_montant || '').trim();
+      const reason = String(data.especes_motif || '').trim();
+      const city = String(data.especes_ville || '').trim();
+      const date = displayDate(data.especes_date);
+      pdf.text(`Montant remis : ${amount || '________________________'} Ariary`, 55, top + 85);
+      pdf.text(`Motif : ${reason || '___________________________________________________'}`, 55, top + 108);
+      pdf.text(`Fait a ${city || '______________________________'}, le ${date || '____ / ____ / ______'}`, 55, top + 131);
       pdf.text('Signature du remettant', 75, top + 170);
       pdf.text('Signature du beneficiaire', 330, top + 170);
       pdf.moveTo(55, top + 215).lineTo(260, top + 215).stroke();
@@ -280,7 +284,11 @@ async function renderContratsImmoPdf(options) {
   const edlFields = buildTemplateData({ ...options, type: 'edl' });
   const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields);
   const edlPdf = await convertContratsImmoDocxToPdf(edlDocx);
-  const documents = [mainPdf, edlPdf];
+  const documents = [
+    ...(Array.isArray(options.annexes) ? options.annexes.filter((buffer) => Buffer.isBuffer(buffer)) : []),
+    mainPdf,
+    edlPdf,
+  ];
   const templateIds = [templateId, 'etat_des_lieux'];
   for (const [field, auxiliaryId] of [['inclure_charte', 'charte_colocation'], ['inclure_attestation_logement', 'attestation_logement']]) {
     if (options.data?.[field] !== 'oui') continue;

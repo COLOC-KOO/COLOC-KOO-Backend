@@ -13,6 +13,7 @@ const { TEMPLATES } = require('../Services/contrats-immo-template.service');
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
 const DOCUMENT_ARCHIVES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-archives');
+const DOCUMENT_ANNEXES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-annexes');
 const DOCUMENT_DATA_KEY_PATH = path.join(__dirname, '..', '..', 'private_uploads', 'document-data.key');
 const execFileAsync = promisify(execFile);
 
@@ -95,6 +96,8 @@ async function ensureDocumentRequestsSchema() {
   for (const [name, definition] of [
     ['download_token_hash', 'CHAR(64) NULL AFTER client_deleted'],
     ['download_token_expires_at', 'DATETIME NULL AFTER download_token_hash'],
+    ['autorisation_filename', 'VARCHAR(80) NULL AFTER download_token_expires_at'],
+    ['mandat_filename', 'VARCHAR(80) NULL AFTER autorisation_filename'],
   ]) {
     const column = await query(`SHOW COLUMNS FROM demandes_documents_contractuels LIKE '${name}'`);
     if (!column.length) await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
@@ -219,6 +222,14 @@ function validateData(type, profile, data, templateId) {
       if (data?.tranquillite_21h_6h === 'non' && (!data.tranquillite_debut || !data.tranquillite_fin)) invalidTunnel.push('tranquillite_debut/fin');
       if (data?.invites_3_6 === 'non' && !data.invites_limite_nuits) invalidTunnel.push('invites_limite_nuits');
       if (data?.tabac_espaces_designes === 'oui' && !data.tabac_espaces) invalidTunnel.push('tabac_espaces');
+    }
+    if (data?.inclure_attestation_especes === 'oui') {
+      for (const key of ['especes_montant', 'especes_motif', 'especes_ville', 'especes_date']) {
+        if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
+      }
+      if (!/^\d+(?:\.\d{1,2})?$/.test(String(data?.especes_montant || '')) || Number(data.especes_montant) <= 0) {
+        invalidTunnel.push('especes_montant (montant positif requis)');
+      }
     }
     if (data?.inclure_attestation_logement === 'oui' && profile === 'professionnel' && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
@@ -745,13 +756,62 @@ async function deleteMine(req, res, next) {
     await ensureDocumentRequestsSchema();
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    const rows = await query('SELECT autorisation_filename, mandat_filename FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0 LIMIT 1', [id, currentUserId(req)]);
+    if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const result = await query(
-      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
+      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
       [JSON.stringify({}), id, currentUserId(req)]
     );
     if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
+    for (const filename of [rows[0].autorisation_filename, rows[0].mandat_filename]) {
+      if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
+        await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
+      }
+    }
     res.json({ ok: true });
   } catch (err) { next(err); }
+}
+
+async function uploadSignedAnnex(req, res, next) {
+  let savedPath;
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    const annexType = req.params.type;
+    if (!Number.isInteger(id) || id <= 0 || !['autorisation', 'mandat'].includes(annexType)) {
+      return res.status(400).json({ message: 'Demande ou type d’annexe invalide.' });
+    }
+    if (!Buffer.isBuffer(req.file?.buffer) || req.file.buffer.length < 8 || req.file.buffer.toString('ascii', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ message: 'Joignez un fichier PDF valide.' });
+    }
+    const rows = await query(
+      `SELECT id_demande, type_document, profil_demandeur, template_id, statut, autorisation_filename, mandat_filename
+         FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1`,
+      [id, currentUserId(req)]
+    );
+    const request = rows[0];
+    if (!request) return res.status(404).json({ message: 'Demande introuvable.' });
+    if (request.statut !== 'brouillon') return res.status(409).json({ message: 'Les annexes ne peuvent être modifiées après le début du paiement.' });
+    const allowed = annexType === 'autorisation'
+      ? request.template_id === 'contrat_intercolocs' && request.profil_demandeur === 'locataire'
+      : request.template_id === 'contrat_mandacolocs' && request.profil_demandeur === 'professionnel';
+    if (!allowed) return res.status(400).json({ message: 'Cette annexe ne correspond pas au contrat sélectionné.' });
+    await fs.promises.mkdir(DOCUMENT_ANNEXES_DIR, { recursive: true, mode: 0o700 });
+    const filename = `${crypto.randomBytes(20).toString('hex')}.pdf`;
+    savedPath = path.join(DOCUMENT_ANNEXES_DIR, filename);
+    await fs.promises.writeFile(savedPath, req.file.buffer, { flag: 'wx', mode: 0o600 });
+    const column = annexType === 'autorisation' ? 'autorisation_filename' : 'mandat_filename';
+    await query(`UPDATE demandes_documents_contractuels SET ${column} = ? WHERE id_demande = ? AND statut = 'brouillon'`, [filename, id]);
+    const previous = annexType === 'autorisation' ? request.autorisation_filename : request.mandat_filename;
+    if (/^[a-f0-9]{40}\.pdf$/.test(previous || '')) {
+      await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, previous)).catch(() => {});
+    }
+    savedPath = null;
+    res.status(201).json({ ok: true, type: annexType });
+  } catch (err) {
+    if (savedPath) await fs.promises.unlink(savedPath).catch(() => {});
+    next(err);
+  }
 }
 
 async function submitPayment(req, res, next) {
@@ -773,11 +833,20 @@ async function submitPayment(req, res, next) {
       return res.status(400).json({ message: 'Joignez la capture du message de confirmation MVola pour permettre la vérification.' });
     }
     const rows = await query(
-      'SELECT id_demande, reference, statut, montant FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1',
+      'SELECT id_demande, reference, type_document, template_id, profil_demandeur, statut, montant, autorisation_filename, mandat_filename FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1',
       [id, currentUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     if (rows[0].statut !== 'brouillon') return res.status(409).json({ message: 'Le paiement de cette demande a déjà été soumis.' });
+    if (rows[0].template_id === 'contrat_intercolocs' && rows[0].profil_demandeur === 'locataire' && !rows[0].autorisation_filename) {
+      return res.status(400).json({ message: 'Ajoutez l’Autorisation de colocation signée avant le paiement.' });
+    }
+    if (rows[0].template_id === 'contrat_mandacolocs' && rows[0].profil_demandeur === 'professionnel' && !rows[0].mandat_filename) {
+      return res.status(400).json({ message: 'Ajoutez le Mandat de gestion signé avant le paiement.' });
+    }
+    for (const filename of [rows[0].autorisation_filename, rows[0].mandat_filename]) {
+      if (filename) await fs.promises.access(path.join(DOCUMENT_ANNEXES_DIR, filename));
+    }
     const duplicateReferences = await query(
       `SELECT id_demande FROM demandes_documents_contractuels
         WHERE LOWER(moyen_paiement) = LOWER(?) AND LOWER(reference_operateur) = LOWER(?)
@@ -1120,6 +1189,10 @@ async function updateBackoffice(req, res, next) {
           templateId: request.template_id,
           profile: request.profil_demandeur,
           data: await decryptRequestData(request.donnees),
+          annexes: await Promise.all([
+            request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename)),
+            request.autorisation_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.autorisation_filename)),
+          ].filter(Boolean)),
         });
         const buyerRows = await query('SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [request.id_utilisateur]);
         archive = await savePdfaArchive({
@@ -1148,7 +1221,9 @@ async function updateBackoffice(req, res, next) {
                   WHEN ? = 'valide' AND ? = 1 THEN CURRENT_TIMESTAMP
                   WHEN ? = 'valide' THEN COALESCE(archive_generated_at, CURRENT_TIMESTAMP)
                   ELSE archive_generated_at
-                END
+                END,
+                autorisation_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE autorisation_filename END,
+                mandat_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE mandat_filename END
           WHERE id_demande = ?`,
         [
           statut,
@@ -1161,9 +1236,18 @@ async function updateBackoffice(req, res, next) {
           statut,
           savedArchive ? 1 : 0,
           statut,
+          statut,
+          statut,
           id,
         ]
       );
+      if (['valide', 'refuse'].includes(statut)) {
+        for (const filename of [request.autorisation_filename, request.mandat_filename]) {
+          if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
+            await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
+          }
+        }
+      }
     } catch (updateError) {
       if (savedArchive) {
         await fs.promises.unlink(path.join(DOCUMENT_ARCHIVES_DIR, savedArchive)).catch((cleanupError) => {
@@ -1185,6 +1269,7 @@ async function updateBackoffice(req, res, next) {
 
 module.exports = {
   createDraft,
+  uploadSignedAnnex,
   preview,
   listMine,
   deleteMine,

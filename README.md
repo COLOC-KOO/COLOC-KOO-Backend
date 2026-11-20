@@ -90,19 +90,28 @@ de variable) réactive le mode maintenance.
 
 ## Archivage PDF/A des contrats et états des lieux
 
-A la creation de la demande, le backend genere le PDF/A et conserve uniquement ce document dans `private_uploads/document-archives`. Les reponses au questionnaire ne sont pas conservees en base. Le document reste prive pendant la verification manuelle du paiement, puis devient telechargeable par le demandeur apres validation. Ce
-dossier doit rester privé et être inclus dans les sauvegardes. Appliquer également la migration
+La création d’une demande enregistre un brouillon sans générer ni archiver de PDF. Les réponses
+sont chiffrées en base pendant le traitement afin que l’équipe puisse préparer le document ; elles
+sont effacées quand la demande est validée ou refusée. Le client soumet sa référence Mobile Money
+(et la capture MVola lorsqu’elle est requise). Un opérateur vérifie le paiement puis valide la
+demande dans le back-office. Cette validation déclenche la génération du PDF final, son marquage
+avec le nom de l’acheteur et la référence de transaction, la conversion PDF/A et le calcul de
+l’empreinte SHA-256. Seul ce PDF/A non chiffré est conservé dans
+`private_uploads/document-archives`. Il devient téléchargeable après validation du paiement.
+
+Le dossier doit rester privé et être inclus dans les sauvegardes. Appliquer également la migration
 `src/Database/2026-11-12_contract_document_pdf_archive.sql` sur la base de production.
-Ghostscript et un profil ICC
-sRGB sont nécessaires sur chaque instance backend :
+Ghostscript et un profil ICC sRGB sont nécessaires sur chaque instance backend :
 
 - `GS_BIN` (facultatif, par défaut `gs`) : chemin de l’exécutable Ghostscript.
 - `PDF_A_ICC_PROFILE` (facultatif, par défaut `/usr/share/color/icc/ghostscript/default_rgb.icc`) :
   chemin du profil ICC sRGB.
 
-Le demandeur choisit un mot de passe à chaque téléchargement de sa copie PDF chiffrée. Le
-mot de passe n’est pas stocké ; les permissions PDF autorisent l’impression et bloquent la
-modification, la copie et l’annotation.
+Le client crée un lien de téléchargement à usage temporaire, valable 15 minutes. Le lien sert le
+même PDF/A archivé, sans chiffrement ni mot de passe ; l’empreinte est vérifiée avant chaque
+téléchargement. L’historique client permet de demander un nouveau lien et de supprimer une
+demande de sa liste. La suppression masque la demande et efface ses réponses, tout en conservant
+l’archive contractuelle et son empreinte côté Coloc’KOO.
 
 ## Envoi des contrats de colocation
 
