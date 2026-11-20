@@ -259,8 +259,10 @@ function parseJson(value, fallback) {
 function validateData(type, profile, data, templateId) {
   const isMainContract = ['contrat_intercolocs', 'contrat_propriocolocs', 'contrat_mandacolocs'].includes(templateId);
   if (templateId && !Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) return ['template_id'];
+  if (isMainContract && type !== 'contrat') return ['type_document'];
   if (isMainContract && MAIN_TEMPLATE_PROFILE[templateId] !== profile) return ['template_id / profil_demandeur'];
   if (templateId === 'etat_des_lieux' && type !== 'edl') return ['type_document'];
+  if (type === 'edl' && templateId !== 'etat_des_lieux') return ['template_id / type_document'];
   if (AUXILIARY_TEMPLATE_PROFILES[templateId] && !AUXILIARY_TEMPLATE_PROFILES[templateId].includes(profile)) return ['template_id / profil_demandeur'];
   if (templateId && !isMainContract && type !== 'edl') {
     const entries = Object.entries(data || {});
@@ -283,7 +285,7 @@ function validateData(type, profile, data, templateId) {
     requireFields(auxiliaryRequired[templateId] || []);
     if (templateId === 'autorisation_colocation') {
       for (const key of ['represente_par_mandataire', 'colocs_par_piece', 'validation_proprietaire', 'regime_solidaire', 'revocation_un_mois']) requireBoolean(key);
-      if (data.represente_par_mandataire === 'true') requireFields(['mandataire_denomination', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_representant']);
+      if (data.represente_par_mandataire === 'true') requireFields(['mandataire_denomination', 'mandataire_forme_juridique', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_siege', 'mandataire_representant']);
       if (data.colocs_par_piece === 'false') requirePositiveNumber('colocs_nombre_total');
       if (data.validation_proprietaire === 'true') requirePositiveNumber('validation_delai_jours');
       if (data.validation_proprietaire === 'false' && data.regime_solidaire !== 'true') issues.push('regime_solidaire (obligatoirement solidaire si le gestionnaire choisit seul)');
@@ -310,6 +312,16 @@ function validateData(type, profile, data, templateId) {
     if (templateId === 'avenant_substitution') {
       for (const key of ['op_nouveau_etait_sous_occupant', 'regime_solidaire', 'retribution_reconduite']) requireBoolean(key);
       if (data.op_nouveau_etait_sous_occupant === 'true') requireFields(['op_nouveau_date_contrat_intercolocs']);
+      if (String(data.sous_occupants_texte || '').trim()) {
+        const occupants = String(data.sous_occupants_texte).split(/\r?\n/).filter((line) => line.trim());
+        if (occupants.length > 7 || occupants.some((line) => {
+          const [name, date] = line.split('|').map((part) => part.trim());
+          if (!name || !/^\d{2}\/\d{2}\/\d{4}$/.test(date || '')) return true;
+          const [, day, month, year] = date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+          const parsedDate = new Date(Number(year), Number(month) - 1, Number(day));
+          return parsedDate.getFullYear() !== Number(year) || parsedDate.getMonth() !== Number(month) - 1 || parsedDate.getDate() !== Number(day);
+        })) issues.push('sous_occupants_texte (7 lignes maximum, nom | date JJ/MM/AAAA)');
+      }
       if (data.retribution_reconduite === 'false') {
         requireOneOption(['retribution_marge', 'retribution_reduction', 'retribution_aucune'], 'retribution');
         if (data.retribution_marge === 'true') requireFields(['retribution_marge_valeur']);
@@ -344,11 +356,16 @@ function validateData(type, profile, data, templateId) {
     return issues;
   }
   const required = [
-    'adresse', 'code_postal', 'ville', 'type_bien', 'nom_demandeur', 'telephone_demandeur',
-    'email_demandeur', 'nom_autre_partie', 'cin_autre_partie', 'telephone_autre_partie',
-    'email_autre_partie', 'date_entree',
+    'adresse', 'code_postal', 'ville', 'telephone_demandeur',
+    'nom_autre_partie', 'cin_autre_partie', 'telephone_autre_partie',
   ];
+  if (type === 'contrat') required.push('type_bien', 'email_demandeur', 'email_autre_partie');
+  if (type === 'contrat') required.push('date_entree');
+  if (profile !== 'professionnel' || type === 'edl') required.push('nom_demandeur');
+  if (type === 'contrat') required.push('prenom_autre_partie');
+  if (type === 'contrat' && !(profile === 'proprietaire' && data?.personne_morale === 'oui')) required.push('prenom_demandeur');
   if (type === 'edl' || (profile !== 'professionnel' && !(profile === 'proprietaire' && data?.personne_morale === 'oui'))) required.push('cin_demandeur');
+  if (type === 'contrat' && data?.inclure_attestation_logement === 'oui' && (profile === 'professionnel' || profile === 'proprietaire' && data?.personne_morale === 'oui')) required.push('cin_demandeur');
   if (type === 'contrat') required.push('loyer');
   if (type === 'contrat' && profile === 'professionnel') required.push('nom_entreprise', 'representant');
   const invalid = Object.entries(data || {})
@@ -360,7 +377,7 @@ function validateData(type, profile, data, templateId) {
   const invalidIdentityFields = [];
   for (const key of ['cin_demandeur', 'cin_autre_partie']) {
     const value = String(data?.[key] ?? '');
-    if (value && !/^\d{1,12}$/.test(value)) invalidIdentityFields.push(key);
+    if (value && !/^[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 ._/-]{0,39}$/.test(value)) invalidIdentityFields.push(key);
   }
   for (const key of ['telephone_demandeur', 'telephone_autre_partie']) {
     const value = String(data?.[key] ?? '');
@@ -370,14 +387,22 @@ function validateData(type, profile, data, templateId) {
   if (type === 'contrat') {
     const tunnelRequired = [
       'nombre_colocataires', 'choix_colocataires', 'solidarite', 'meuble', 'duree_bail',
-      'mois_depot', 'periodicite_revision', 'niveaux_texte', 'espace_privatif_description', 'charges_avec', 'modes_reglement',
+      'mois_depot', 'periodicite_revision', 'niveaux_texte', 'espace_privatif_description', 'observations', 'charges_avec', 'modes_reglement',
       'taux_revision', 'preavis_bailleur', 'jour_paiement', 'salle_bain_privee',
     ];
-    if (profile !== 'professionnel') tunnelRequired.push('date_naissance_demandeur', 'ville_naissance_demandeur', 'pays_naissance_demandeur');
+    if (profile !== 'professionnel' && !(profile === 'proprietaire' && data?.personne_morale === 'oui')) tunnelRequired.push('date_naissance_demandeur', 'ville_naissance_demandeur', 'pays_naissance_demandeur');
     tunnelRequired.push('date_naissance_autre_partie', 'ville_naissance_autre_partie', 'pays_naissance_autre_partie');
+    tunnelRequired.push('inclure_charte', 'inclure_attestation_logement');
+    const acceptsCash = String(data?.modes_reglement || '').split(';').some((method) => method.trim() === 'Espèces');
+    if (acceptsCash) tunnelRequired.push('inclure_attestation_especes');
+    else if (data?.inclure_attestation_especes === 'oui') invalidTunnel.push('inclure_attestation_especes (espèces non sélectionnées)');
     if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article', 'autorisation_signee');
     if (profile === 'locataire' && data?.autorisation_signee !== 'oui') invalidTunnel.push('autorisation_signee');
     if (profile === 'locataire') tunnelRequired.push('revision_date_anniversaire');
+    if (profile === 'proprietaire' || profile === 'professionnel') {
+      tunnelRequired.push('statut_proprietaire');
+      if (!['proprietaire', 'titulaire_droits'].includes(data?.statut_proprietaire)) invalidTunnel.push('statut_proprietaire');
+    }
     const ownerValidatesOccupant = ['gestionnaire_presel_proprietaire_valide', 'mandant_valide'].includes(data?.choix_colocataires);
     if (ownerValidatesOccupant) tunnelRequired.push('delai_validation');
     for (const key of tunnelRequired) if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
@@ -389,7 +414,7 @@ function validateData(type, profile, data, templateId) {
       if (data?.invites_3_6 === 'non' && !data.invites_limite_nuits) invalidTunnel.push('invites_limite_nuits');
       if (data?.tabac_espaces_designes === 'oui' && !data.tabac_espaces) invalidTunnel.push('tabac_espaces');
     }
-    if (data?.inclure_attestation_logement === 'oui' && profile === 'professionnel' && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
+    if (data?.inclure_attestation_logement === 'oui' && (profile === 'professionnel' || profile === 'proprietaire' && data?.personne_morale === 'oui') && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
     if (!['Individuelle', 'Solidaire'].includes(data?.solidarite)) invalidTunnel.push('solidarite');
     const allowedChooserValues = profile === 'professionnel'
@@ -399,6 +424,9 @@ function validateData(type, profile, data, templateId) {
     if (!['oui', 'non'].includes(data?.meuble)) invalidTunnel.push('meuble');
     if (!['oui', 'non'].includes(data?.charges_avec)) invalidTunnel.push('charges_avec');
     if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
+    for (const key of ['inclure_charte', 'inclure_attestation_logement', ...(acceptsCash ? ['inclure_attestation_especes'] : [])]) {
+      if (!['oui', 'non'].includes(String(data?.[key] || '').toLowerCase())) invalidTunnel.push(key);
+    }
     if (Number(data?.loyer) <= 0) invalidTunnel.push('loyer');
     if (Number(data?.mois_depot) <= 0) invalidTunnel.push('mois_depot');
     if (Number(data?.periodicite_revision) <= 0) invalidTunnel.push('periodicite_revision');
@@ -407,18 +435,19 @@ function validateData(type, profile, data, templateId) {
     if (!levels.length || levels.length > 3 || levels.some((parts) => !parts[0] || !parts[1])) invalidTunnel.push('niveaux_texte');
     if (data?.charges_avec === 'oui') {
       const charges = String(data?.charges_lignes_texte || '').split(/\r?\n/).map((line) => line.split('|').map((part) => part.trim()));
-      if (!charges.length || charges.length > 3 || charges.some((parts) => !parts[0] || !/^\d+$/.test(parts[1] || ''))) invalidTunnel.push('charges_lignes_texte');
+      if (!charges.length || charges.length > 3 || charges.some((parts) => parts.length < 3 || !parts[0] || !/^\d+$/.test(parts[1] || '') || Number(parts[1]) <= 0 || !parts[2])) invalidTunnel.push('charges_lignes_texte');
     }
     if (profile === 'professionnel') {
       if (!String(data?.nom_proprietaire || '').trim()) invalidTunnel.push('nom_proprietaire');
       if (!String(data?.adresse_proprietaire || '').trim()) invalidTunnel.push('adresse_proprietaire');
+      if (!String(data?.cin_proprietaire || '').trim()) invalidTunnel.push('cin_proprietaire');
       for (const key of ['nif', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise', 'representant_qualite', 'date_mandat']) {
         if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
       }
       if (data?.pouvoir_signature !== 'oui') invalidTunnel.push('pouvoir_signature');
     }
     if (profile === 'proprietaire' && data?.personne_morale === 'oui') {
-      for (const key of ['nom_entreprise', 'nif', 'representant', 'representant_qualite', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise']) {
+      for (const key of ['nif', 'representant', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise']) {
         if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
       }
     }
@@ -890,7 +919,8 @@ async function preview(req, res, next) {
       templateEdits: await getActiveTemplateEdits(),
     });
     // Le navigateur reçoit des pages image, pas le PDF éditable ni une visionneuse native.
-    const pages = await renderPreviewPages(rendered.pdfBuffer, `APERÇU - ${data.nom_demandeur || data.demandeur_nom_complet || 'Coloc KOO'}`);
+    const requester = [data.prenom_demandeur, data.nom_demandeur].filter(Boolean).join(' ') || data.representant || data.nom_entreprise || data.demandeur_nom_complet || 'Coloc KOO';
+    const pages = await renderPreviewPages(rendered.pdfBuffer, `APERÇU - ${requester}`);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.json({ pages });
@@ -930,7 +960,7 @@ async function deleteMine(req, res, next) {
     const rows = await query('SELECT autorisation_filename, mandat_filename, preuve_paiement FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0 LIMIT 1', [id, currentUserId(req)]);
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const result = await query(
-      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL, preuve_paiement = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
+      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, clauses_ids = JSON_ARRAY(), clauses_snapshot = JSON_ARRAY(), download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL, preuve_paiement = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
       [JSON.stringify({}), id, currentUserId(req)]
     );
     if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
@@ -1373,6 +1403,9 @@ async function updateBackoffice(req, res, next) {
           if (archiveError.code !== 'ENOENT') throw archiveError;
         }
       }
+      if (request.statut === 'valide' && !archive) {
+        return res.status(503).json({ message: 'L’archive finale est absente ou altérée et ne peut pas être régénérée. Contacte l’équipe Coloc’KOO.' });
+      }
       if (!archive) {
         const rendered = await renderContratsImmoPdf({
           reference: request.reference,
@@ -1410,6 +1443,8 @@ async function updateBackoffice(req, res, next) {
                 archive_filename = ?,
                 archive_sha256 = ?,
                 donnees = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_OBJECT() ELSE donnees END,
+                clauses_ids = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_ARRAY() ELSE clauses_ids END,
+                clauses_snapshot = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_ARRAY() ELSE clauses_snapshot END,
                 archive_generated_at = CASE
                   WHEN ? = 'refuse' THEN NULL
                   WHEN ? = 'valide' AND ? = 1 THEN CURRENT_TIMESTAMP
@@ -1426,6 +1461,8 @@ async function updateBackoffice(req, res, next) {
           statut,
           statut === 'refuse' ? null : archive?.filename || request.archive_filename || null,
           statut === 'refuse' ? null : archive?.sha256 || request.archive_sha256 || null,
+          statut,
+          statut,
           statut,
           statut,
           statut,
