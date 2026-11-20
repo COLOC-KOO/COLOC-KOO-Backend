@@ -162,12 +162,13 @@ function validateData(type, profile, data, templateId) {
     const issues = [];
     if (['autorisation_colocation', 'avenant_substitution'].includes(templateId)) {
       const reduction = String(data.retribution_reduction_valeur || '').trim();
-      if (data.retribution_reduction === 'true' && reduction) {
-        const isRate = reduction.endsWith('%');
-        const amount = Number(reduction.replace(/[^\d.]/g, ''));
-        const rent = Number(data.loyer_total || data.loyer || 0);
-        if (!Number.isFinite(amount) || amount < 0 || (isRate ? amount > 10 : rent <= 0 || amount > rent * 0.1)) {
-          issues.push('retribution_reduction_valeur (maximum 10 % du loyer total)');
+      if (data.retribution_reduction === 'true') {
+        const match = reduction.match(/^(\d+(?:[.,]\d{1,2})?)\s*(%|ar)?$/i);
+        const amount = match ? Number(match[1].replace(',', '.')) : NaN;
+        const rent = Number(String(data.loyer_total || data.loyer || '').replace(/\s/g, ''));
+        const isRate = match?.[2] === '%';
+        if (!match || !Number.isFinite(amount) || amount <= 0 || !Number.isFinite(rent) || rent <= 0 || (isRate ? amount > 10 : amount > rent * 0.1)) {
+          issues.push('retribution_reduction_valeur (montant requis, maximum 10 % du loyer total)');
         }
       }
       if (templateId === 'autorisation_colocation' && (data.regime_solidaire === 'false' || data.regime_solidaire === false) && data.retribution_marge === 'true') {
@@ -223,14 +224,6 @@ function validateData(type, profile, data, templateId) {
       if (data?.invites_3_6 === 'non' && !data.invites_limite_nuits) invalidTunnel.push('invites_limite_nuits');
       if (data?.tabac_espaces_designes === 'oui' && !data.tabac_espaces) invalidTunnel.push('tabac_espaces');
     }
-    if (data?.inclure_attestation_especes === 'oui') {
-      for (const key of ['especes_montant', 'especes_motif', 'especes_ville', 'especes_date']) {
-        if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
-      }
-      if (!/^\d+(?:\.\d{1,2})?$/.test(String(data?.especes_montant || '')) || Number(data.especes_montant) <= 0) {
-        invalidTunnel.push('especes_montant (montant positif requis)');
-      }
-    }
     if (data?.inclure_attestation_logement === 'oui' && profile === 'professionnel' && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
     if (!['Individuelle', 'Solidaire'].includes(data?.solidarite)) invalidTunnel.push('solidarite');
@@ -260,8 +253,9 @@ function validateData(type, profile, data, templateId) {
       if (!String(data?.representant || '').trim()) invalidTunnel.push('representant');
       if (!String(data?.representant_qualite || '').trim()) invalidTunnel.push('representant_qualite');
     }
-  } else if (!['oui', 'non'].includes(data?.salle_bain_privee)) {
-    invalidTunnel.push('salle_bain_privee');
+  } else {
+    if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
+    if (!['d’entrée', 'de sortie'].includes(data?.edl_type)) invalidTunnel.push('edl_type');
   }
   return [...new Set([...missing, ...invalid, ...invalidIdentityFields, ...invalidNames, ...invalidTunnel])];
 }

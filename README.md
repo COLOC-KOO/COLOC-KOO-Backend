@@ -119,7 +119,8 @@ Ces annexes sont stockées dans `private_uploads/document-annexes` durant le tra
 supprimées après validation, refus ou suppression client. L’état des lieux est joint
 automatiquement ; la charte, l’attestation de logement et l’attestation espèces sont générées
 depuis les réponses de la même session quand elles sont sélectionnées. L’attestation espèces
-comporte deux exemplaires préremplis ; la quittance reste un modèle vierge téléchargeable.
+comporte deux exemplaires avec les parties préremplies ; montant, motif, lieu et date restent
+vierges. La quittance reste un modèle vierge téléchargeable.
 
 Pour plusieurs Sous-occupants, chaque contrat dispose de sa propre demande et de son paiement.
 Le bouton de demande suivante conserve les réponses communes en mémoire et vide les huit champs
