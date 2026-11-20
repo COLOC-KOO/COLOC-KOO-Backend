@@ -1,4 +1,4 @@
-const { query, insertAndGetId } = require('../Services/db.service');
+const { query, insertAndGetId, withTransaction } = require('../Services/db.service');
 const { ensureContractContent, getConfigValue } = require('./meta.controller');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,7 +8,12 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const PDFDocument = require('pdfkit');
 const { renderContratsImmoPdf } = require('../Services/contrats-immo-data.service');
-const { TEMPLATES } = require('../Services/contrats-immo-template.service');
+const {
+  TEMPLATES,
+  TEMPLATE_TITLES,
+  getTemplateParagraphs,
+  validateTemplateEdits,
+} = require('../Services/contrats-immo-template.service');
 
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
@@ -59,6 +64,21 @@ async function ensureDocumentRequestsSchema() {
       KEY idx_empreintes_sha256 (sha256)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS revisions_modeles_documents_contractuels (
+      id_revision BIGINT NOT NULL AUTO_INCREMENT,
+      template_id VARCHAR(60) NOT NULL,
+      numero_revision INT NOT NULL,
+      modifications JSON NOT NULL,
+      sha256 CHAR(64) NOT NULL,
+      actif TINYINT(1) NOT NULL DEFAULT 1,
+      id_utilisateur INT NOT NULL,
+      date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id_revision),
+      UNIQUE KEY uq_modele_revision (template_id, numero_revision),
+      KEY idx_modele_actif (template_id, actif, numero_revision)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
   const fingerprintType = await query("SHOW COLUMNS FROM empreintes_documents_contractuels LIKE 'type_pdf'");
   if (String(fingerprintType[0]?.Type || '').toLowerCase().startsWith('enum(')) {
     await query("ALTER TABLE empreintes_documents_contractuels MODIFY COLUMN type_pdf VARCHAR(30) NOT NULL");
@@ -101,6 +121,80 @@ async function ensureDocumentRequestsSchema() {
   ]) {
     const column = await query(`SHOW COLUMNS FROM demandes_documents_contractuels LIKE '${name}'`);
     if (!column.length) await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+function parseTemplateEdits(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getActiveTemplateEdits() {
+  const rows = await query('SELECT template_id, modifications FROM revisions_modeles_documents_contractuels WHERE actif = 1');
+  return Object.fromEntries(rows.map((row) => [row.template_id, parseTemplateEdits(row.modifications)]));
+}
+
+async function listBackofficeTemplates(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const templateId = req.params.templateId;
+    if (!Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) {
+      return res.status(404).json({ message: 'Modèle introuvable.' });
+    }
+    const [history] = await Promise.all([
+      query('SELECT id_revision, numero_revision, modifications, sha256, actif, date_creation FROM revisions_modeles_documents_contractuels WHERE template_id = ? ORDER BY numero_revision DESC LIMIT 30', [templateId]),
+    ]);
+    res.json({
+      template: { id: templateId, title: TEMPLATE_TITLES[templateId] },
+      paragraphs: getTemplateParagraphs(templateId),
+      revisions: history.map((revision) => ({
+        id: revision.id_revision,
+        version: revision.numero_revision,
+        edits: parseTemplateEdits(revision.modifications),
+        sha256: revision.sha256,
+        active: Boolean(revision.actif),
+        created_at: revision.date_creation,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function saveBackofficeTemplate(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const templateId = req.params.templateId;
+    if (!Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) {
+      return res.status(404).json({ message: 'Modèle introuvable.' });
+    }
+    let edits;
+    try {
+      edits = validateTemplateEdits(templateId, req.body?.edits);
+    } catch (error) {
+      return res.status(400).json({ message: error.message || 'Modifications du modèle invalides.' });
+    }
+    const serialized = JSON.stringify(edits);
+    const sha256 = crypto.createHash('sha256').update(serialized).digest('hex');
+    const revision = await withTransaction(async (tx) => {
+      const rows = await tx('SELECT numero_revision AS latest FROM revisions_modeles_documents_contractuels WHERE template_id = ? ORDER BY numero_revision DESC LIMIT 1 FOR UPDATE', [templateId]);
+      const nextVersion = Number(rows[0]?.latest || 0) + 1;
+      await tx('UPDATE revisions_modeles_documents_contractuels SET actif = 0 WHERE template_id = ? AND actif = 1', [templateId]);
+      const inserted = await tx(
+        'INSERT INTO revisions_modeles_documents_contractuels (template_id, numero_revision, modifications, sha256, actif, id_utilisateur) VALUES (?, ?, ?, ?, 1, ?)',
+        [templateId, nextVersion, serialized, sha256, currentUserId(req)]
+      );
+      return { id: inserted.insertId, version: nextVersion };
+    });
+    res.status(201).json({ ok: true, ...revision, sha256 });
+  } catch (error) {
+    next(error);
   }
 }
 
@@ -704,6 +798,7 @@ async function createDraft(req, res, next) {
 
 async function preview(req, res, next) {
   try {
+    await ensureDocumentRequestsSchema();
     const { type_document: type, template_id: templateId, profil_demandeur: profile, donnees: data } = req.body;
     if (!['contrat', 'edl'].includes(type) || !PROFILE_ROLES.has(profile) || !data || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ message: 'Informations d’aperçu invalides.' });
@@ -711,7 +806,14 @@ async function preview(req, res, next) {
     const resolvedTemplateId = templateId || (type === 'edl' ? 'etat_des_lieux' : undefined);
     const missing = validateData(type, profile, data, resolvedTemplateId);
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
-    const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'APERÇU' });
+    const rendered = await renderContratsImmoPdf({
+      type,
+      templateId: resolvedTemplateId,
+      profile,
+      data,
+      reference: 'APERÇU',
+      templateEdits: await getActiveTemplateEdits(),
+    });
     // Le navigateur reçoit des pages image, pas le PDF éditable ni une visionneuse native.
     const pages = await renderPreviewPages(rendered.pdfBuffer, `APERÇU - ${data.nom_demandeur || data.demandeur_nom_complet || 'Coloc KOO'}`);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -1203,6 +1305,7 @@ async function updateBackoffice(req, res, next) {
           templateId: request.template_id,
           profile: request.profil_demandeur,
           data: await decryptRequestData(request.donnees),
+          templateEdits: await getActiveTemplateEdits(),
           annexes: await Promise.all([
             request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename))
               .then((pdfBuffer) => ({ title: 'ANNEXE 0 : MANDAT DE GESTION', pdfBuffer })),
@@ -1299,6 +1402,8 @@ module.exports = {
   createDownloadLink,
   downloadByToken,
   listBackoffice,
+  listBackofficeTemplates,
+  saveBackofficeTemplate,
   listBackofficeClauses,
   createBackofficeClause,
   updateBackofficeClause,

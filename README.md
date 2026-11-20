@@ -122,6 +122,11 @@ depuis les réponses de la même session quand elles sont sélectionnées. L’a
 comporte deux exemplaires avec les parties préremplies ; montant, motif, lieu et date restent
 vierges. La quittance reste un modèle vierge téléchargeable.
 
+Le Super Admin peut modifier le texte des neuf modèles Word depuis « Modèles Contrats Immo »
+dans le back-office. Les révisions sont conservées en base ; les balises de données et de
+conditions ne peuvent pas être changées par l’éditeur. Les PDF/A déjà vendus restent les mêmes
+fichiers archivés et ne sont jamais régénérés à partir d’une version de modèle plus récente.
+
 Pour plusieurs Sous-occupants, chaque contrat dispose de sa propre demande et de son paiement.
 Le bouton de demande suivante conserve les réponses communes en mémoire et vide les huit champs
 d’identité du Sous-occupant précédent.

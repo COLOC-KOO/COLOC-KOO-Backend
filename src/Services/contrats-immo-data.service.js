@@ -290,14 +290,15 @@ function buildTemplateData({ type, profile, data, reference }) {
 async function renderContratsImmoPdf(options) {
   const templateId = options.templateId || (options.type === 'edl' ? 'etat_des_lieux' : TEMPLATE_BY_PROFILE[options.profile]);
   if (!templateId) throw new Error('Aucun modèle Word ne correspond au profil sélectionné.');
+  const templateEdits = options.templateEdits || {};
   const fields = buildTemplateData(options);
-  const docxBuffer = renderContratsImmoDocx(templateId, fields);
+  const docxBuffer = renderContratsImmoDocx(templateId, fields, templateEdits[templateId]);
   const mainPdf = await convertContratsImmoDocxToPdf(docxBuffer);
   if (options.type !== 'contrat' || !Object.values(TEMPLATE_BY_PROFILE).includes(templateId)) {
     return { templateId, fields, docxBuffer, pdfBuffer: mainPdf };
   }
   const edlFields = buildTemplateData({ ...options, type: 'edl' });
-  const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields);
+  const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields, templateEdits.etat_des_lieux);
   const edlPdf = await convertContratsImmoDocxToPdf(edlDocx);
   const documents = [];
   for (const annex of Array.isArray(options.annexes) ? options.annexes : []) {
@@ -309,7 +310,7 @@ async function renderContratsImmoPdf(options) {
   const templateIds = [templateId, 'etat_des_lieux'];
   for (const [field, auxiliaryId] of [['inclure_charte', 'charte_colocation'], ['inclure_attestation_logement', 'attestation_logement']]) {
     if (options.data?.[field] !== 'oui') continue;
-    const auxiliaryDocx = renderContratsImmoDocx(auxiliaryId, fields);
+    const auxiliaryDocx = renderContratsImmoDocx(auxiliaryId, fields, templateEdits[auxiliaryId]);
     documents.push(await convertContratsImmoDocxToPdf(auxiliaryDocx));
     templateIds.push(auxiliaryId);
   }
