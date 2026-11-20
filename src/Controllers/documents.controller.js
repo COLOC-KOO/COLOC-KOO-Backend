@@ -16,6 +16,16 @@ const {
 } = require('../Services/contrats-immo-template.service');
 
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
+const MAIN_TEMPLATE_PROFILE = {
+  contrat_intercolocs: 'locataire',
+  contrat_propriocolocs: 'proprietaire',
+  contrat_mandacolocs: 'professionnel',
+};
+const AUXILIARY_TEMPLATE_PROFILES = {
+  autorisation_colocation: ['locataire', 'proprietaire', 'professionnel'],
+  avenant_substitution: ['locataire', 'proprietaire'],
+  mandat_gestion: ['proprietaire', 'professionnel'],
+};
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
 const DOCUMENT_ARCHIVES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-archives');
 const DOCUMENT_ANNEXES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-annexes');
@@ -249,11 +259,69 @@ function parseJson(value, fallback) {
 function validateData(type, profile, data, templateId) {
   const isMainContract = ['contrat_intercolocs', 'contrat_propriocolocs', 'contrat_mandacolocs'].includes(templateId);
   if (templateId && !Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) return ['template_id'];
-  if (templateId && !isMainContract) {
+  if (isMainContract && MAIN_TEMPLATE_PROFILE[templateId] !== profile) return ['template_id / profil_demandeur'];
+  if (templateId === 'etat_des_lieux' && type !== 'edl') return ['type_document'];
+  if (AUXILIARY_TEMPLATE_PROFILES[templateId] && !AUXILIARY_TEMPLATE_PROFILES[templateId].includes(profile)) return ['template_id / profil_demandeur'];
+  if (templateId && !isMainContract && type !== 'edl') {
     const entries = Object.entries(data || {});
     if (!entries.some(([, value]) => typeof value === 'string' ? value.trim() : Array.isArray(value) && value.length > 0)) return ['donnees'];
     if (entries.some(([, value]) => typeof value !== 'string' || value.length > 4000)) return ['donnees'];
     const issues = [];
+    const requireFields = (keys) => keys.forEach((key) => { if (!String(data[key] || '').trim()) issues.push(key); });
+    const requireBoolean = (key) => { if (!['true', 'false'].includes(String(data[key] || '').toLowerCase())) issues.push(key); };
+    const requirePositiveNumber = (key) => { if (!/^\d+(?:\.\d+)?$/.test(String(data[key] || '')) || Number(data[key]) <= 0) issues.push(key); };
+    const requireOneOption = (keys, label) => {
+      if (keys.filter((key) => data[key] === 'true').length !== 1) issues.push(`${label} (choisir une seule option)`);
+    };
+    const auxiliaryRequired = {
+      autorisation_colocation: ['bail_date_effet', 'bail_duree', 'proprietaire_nom', 'proprietaire_adresse', 'proprietaire_piece_identite', 'op_nom', 'op_prenom', 'op_date_naissance', 'op_ville_naissance', 'op_pays_naissance', 'op_piece_identite', 'op_telephone', 'op_email', 'logement_adresse', 'logement_code_postal', 'logement_ville'],
+      mandat_gestion: ['mandant_nom', 'mandant_adresse', 'mandant_piece_identite', 'mandataire_denomination', 'mandataire_forme_juridique', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_siege', 'mandataire_representant', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'colocs_nombre_max', 'loyer_total', 'depot_mois', 'reversement_delai_jours', 'mandat_preavis'],
+      avenant_substitution: ['autorisation_date', 'proprietaire_nom', 'proprietaire_adresse', 'proprietaire_piece_identite', 'op_sortant_nom', 'op_sortant_adresse', 'op_sortant_piece_identite', 'op_nouveau_nom', 'op_nouveau_adresse', 'op_nouveau_piece_identite', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'date_effet'],
+      charte_colocation: ['logement_adresse', 'logement_code_postal', 'logement_ville', 'locataire_nom', 'locataire_prenom'],
+      attestation_logement: ['gestionnaire_nom_prenom', 'gestionnaire_date_naissance', 'gestionnaire_piece_identite', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'locataire_nom', 'locataire_prenom', 'locataire_date_naissance', 'locataire_piece_identite', 'date_effet'],
+    };
+    requireFields(auxiliaryRequired[templateId] || []);
+    if (templateId === 'autorisation_colocation') {
+      for (const key of ['represente_par_mandataire', 'colocs_par_piece', 'validation_proprietaire', 'regime_solidaire', 'revocation_un_mois']) requireBoolean(key);
+      if (data.represente_par_mandataire === 'true') requireFields(['mandataire_denomination', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_representant']);
+      if (data.colocs_par_piece === 'false') requirePositiveNumber('colocs_nombre_total');
+      if (data.validation_proprietaire === 'true') requirePositiveNumber('validation_delai_jours');
+      if (data.validation_proprietaire === 'false' && data.regime_solidaire !== 'true') issues.push('regime_solidaire (obligatoirement solidaire si le gestionnaire choisit seul)');
+      if (data.revocation_un_mois === 'false') requirePositiveNumber('revocation_preavis_mois');
+      requireOneOption(['retribution_marge', 'retribution_reduction', 'retribution_aucune'], 'retribution');
+      if (data.retribution_marge === 'true') requireFields(['retribution_marge_valeur']);
+      if (data.retribution_reduction === 'true') requireFields(['retribution_reduction_valeur', 'loyer_total']);
+    }
+    if (templateId === 'mandat_gestion') {
+      for (const key of ['regime_solidaire', 'validation_proprietaire', 'remu_mensuelle_forfait', 'depot_par_colocataire', 'mandat_duree_3_ans', 'pouvoir_selection', 'pouvoir_etats_des_lieux', 'pouvoir_perception', 'pouvoir_entrees_sorties', 'pouvoir_gestion_courante']) requireBoolean(key);
+      if (data.validation_proprietaire === 'true') requirePositiveNumber('validation_delai_jours');
+      requireOneOption(['remu_ponctuelle_forfait', 'remu_ponctuelle_pourcentage', 'remu_ponctuelle_aucune'], 'remu_ponctuelle');
+      if (data.remu_ponctuelle_forfait === 'true') requirePositiveNumber('remu_ponctuelle_montant');
+      if (data.remu_ponctuelle_pourcentage === 'true') requirePositiveNumber('remu_ponctuelle_taux');
+      if (data.remu_mensuelle_forfait === 'true') requirePositiveNumber('remu_mensuelle_montant');
+      if (data.remu_mensuelle_forfait === 'false') requirePositiveNumber('remu_mensuelle_taux');
+      if (data.mandat_duree_3_ans === 'false') requireFields(['mandat_duree_autre']);
+      for (const key of ['colocs_nombre_max', 'loyer_total', 'depot_mois', 'reversement_delai_jours']) requirePositiveNumber(key);
+      if (data.repartition_texte) {
+        const repartition = String(data.repartition_texte).split(/\r?\n/).filter(Boolean);
+        if (repartition.length > 7 || repartition.some((line) => line.split('|').length < 3 || !line.split('|')[0].trim() || !line.split('|')[1].trim() || !/^\d+$/.test(line.split('|')[2].replace(/\s/g, '')))) issues.push('repartition_texte');
+      }
+    }
+    if (templateId === 'avenant_substitution') {
+      for (const key of ['op_nouveau_etait_sous_occupant', 'regime_solidaire', 'retribution_reconduite']) requireBoolean(key);
+      if (data.op_nouveau_etait_sous_occupant === 'true') requireFields(['op_nouveau_date_contrat_intercolocs']);
+      if (data.retribution_reconduite === 'false') {
+        requireOneOption(['retribution_marge', 'retribution_reduction', 'retribution_aucune'], 'retribution');
+        if (data.retribution_marge === 'true') requireFields(['retribution_marge_valeur']);
+        if (data.retribution_reduction === 'true') requireFields(['retribution_reduction_valeur', 'loyer_total']);
+      }
+    }
+    if (templateId === 'charte_colocation') {
+      for (const key of ['tranquillite_21h_6h', 'invites_3_6', 'menage_planning', 'tabac_exterieur', 'tabac_interieur_communs', 'tabac_interieur_privatifs', 'tabac_espaces_designes']) requireBoolean(key);
+      if (data.tranquillite_21h_6h === 'false') requireFields(['tranquillite_debut', 'tranquillite_fin']);
+      if (data.invites_3_6 === 'false') requirePositiveNumber('invites_limite_nuits');
+      if (data.tabac_espaces_designes === 'true') requireFields(['tabac_espaces']);
+    }
     if (['autorisation_colocation', 'avenant_substitution'].includes(templateId)) {
       const reduction = String(data.retribution_reduction_valeur || '').trim();
       if (data.retribution_reduction === 'true') {
@@ -265,7 +333,7 @@ function validateData(type, profile, data, templateId) {
           issues.push('retribution_reduction_valeur (montant requis, maximum 10 % du loyer total)');
         }
       }
-      if (templateId === 'autorisation_colocation' && (data.regime_solidaire === 'false' || data.regime_solidaire === false) && data.retribution_marge === 'true') {
+      if (['autorisation_colocation', 'avenant_substitution'].includes(templateId) && (data.regime_solidaire === 'false' || data.regime_solidaire === false) && data.retribution_marge === 'true') {
         issues.push('retribution_marge (indisponible en régime individuel)');
       }
     }
@@ -277,11 +345,12 @@ function validateData(type, profile, data, templateId) {
   }
   const required = [
     'adresse', 'code_postal', 'ville', 'type_bien', 'nom_demandeur', 'telephone_demandeur',
-    'email_demandeur', 'nom_autre_partie', 'telephone_autre_partie',
+    'email_demandeur', 'nom_autre_partie', 'cin_autre_partie', 'telephone_autre_partie',
     'email_autre_partie', 'date_entree',
   ];
+  if (type === 'edl' || (profile !== 'professionnel' && !(profile === 'proprietaire' && data?.personne_morale === 'oui'))) required.push('cin_demandeur');
   if (type === 'contrat') required.push('loyer');
-  if (profile === 'professionnel') required.push('nom_entreprise', 'representant');
+  if (type === 'contrat' && profile === 'professionnel') required.push('nom_entreprise', 'representant');
   const invalid = Object.entries(data || {})
     .filter(([key, value]) => typeof value !== 'string' || value.length > 4000)
     .map(([key]) => key);
@@ -309,6 +378,8 @@ function validateData(type, profile, data, templateId) {
     if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article', 'autorisation_signee');
     if (profile === 'locataire' && data?.autorisation_signee !== 'oui') invalidTunnel.push('autorisation_signee');
     if (profile === 'locataire') tunnelRequired.push('revision_date_anniversaire');
+    const ownerValidatesOccupant = ['gestionnaire_presel_proprietaire_valide', 'mandant_valide'].includes(data?.choix_colocataires);
+    if (ownerValidatesOccupant) tunnelRequired.push('delai_validation');
     for (const key of tunnelRequired) if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
     if (data?.inclure_charte === 'oui') {
       for (const key of ['tranquillite_21h_6h', 'invites_3_6', 'menage_planning', 'tabac_exterieur', 'tabac_interieur_communs', 'tabac_interieur_privatifs', 'tabac_espaces_designes']) {
@@ -321,6 +392,10 @@ function validateData(type, profile, data, templateId) {
     if (data?.inclure_attestation_logement === 'oui' && profile === 'professionnel' && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
     if (!['Individuelle', 'Solidaire'].includes(data?.solidarite)) invalidTunnel.push('solidarite');
+    const allowedChooserValues = profile === 'professionnel'
+      ? ['gestionnaire_seul', 'mandant_valide']
+      : ['gestionnaire_seul', 'gestionnaire_presel_proprietaire_valide', 'proprietaire_seul'];
+    if (!allowedChooserValues.includes(data?.choix_colocataires)) invalidTunnel.push('choix_colocataires');
     if (!['oui', 'non'].includes(data?.meuble)) invalidTunnel.push('meuble');
     if (!['oui', 'non'].includes(data?.charges_avec)) invalidTunnel.push('charges_avec');
     if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
@@ -337,15 +412,15 @@ function validateData(type, profile, data, templateId) {
     if (profile === 'professionnel') {
       if (!String(data?.nom_proprietaire || '').trim()) invalidTunnel.push('nom_proprietaire');
       if (!String(data?.adresse_proprietaire || '').trim()) invalidTunnel.push('adresse_proprietaire');
-      for (const key of ['forme_juridique', 'rcs', 'stat', 'adresse_entreprise', 'date_mandat']) {
+      for (const key of ['nif', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise', 'representant_qualite', 'date_mandat']) {
         if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
       }
       if (data?.pouvoir_signature !== 'oui') invalidTunnel.push('pouvoir_signature');
     }
     if (profile === 'proprietaire' && data?.personne_morale === 'oui') {
-      if (!String(data?.nom_entreprise || '').trim()) invalidTunnel.push('nom_entreprise');
-      if (!String(data?.representant || '').trim()) invalidTunnel.push('representant');
-      if (!String(data?.representant_qualite || '').trim()) invalidTunnel.push('representant_qualite');
+      for (const key of ['nom_entreprise', 'nif', 'representant', 'representant_qualite', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise']) {
+        if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
+      }
     }
   } else {
     if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
@@ -1310,7 +1385,7 @@ async function updateBackoffice(req, res, next) {
             request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename))
               .then((pdfBuffer) => ({ title: 'ANNEXE 0 : MANDAT DE GESTION', pdfBuffer })),
             request.autorisation_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.autorisation_filename))
-              .then((pdfBuffer) => ({ title: 'AUTORISATION DE COLOCATION', pdfBuffer })),
+              .then((pdfBuffer) => ({ title: 'ANNEXE 1 : AUTORISATION DE COLOCATION', pdfBuffer })),
           ].filter(Boolean)),
         });
         const buyerRows = await query('SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [request.id_utilisateur]);

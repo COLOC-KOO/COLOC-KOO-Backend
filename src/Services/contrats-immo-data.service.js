@@ -120,13 +120,9 @@ function cashReceiptPdf(data) {
       pdf.font('Helvetica').fontSize(10);
       pdf.text(`Remettant : ${data.nom_demandeur || ''}`, 55, top + 38);
       pdf.text(`Beneficiaire : ${data.nom_autre_partie || ''}`, 55, top + 57);
-      const amount = String(data.especes_montant || '').trim();
-      const reason = String(data.especes_motif || '').trim();
-      const city = String(data.especes_ville || '').trim();
-      const date = displayDate(data.especes_date);
-      pdf.text(`Montant remis : ${amount || '________________________'} Ariary`, 55, top + 85);
-      pdf.text(`Motif : ${reason || '___________________________________________________'}`, 55, top + 108);
-      pdf.text(`Fait a ${city || '______________________________'}, le ${date || '____ / ____ / ______'}`, 55, top + 131);
+      pdf.text('Montant remis : ________________________ Ariary', 55, top + 85);
+      pdf.text('Motif : ___________________________________________________', 55, top + 108);
+      pdf.text('Fait a ______________________________, le ____ / ____ / ______', 55, top + 131);
       pdf.text('Signature du remettant', 75, top + 170);
       pdf.text('Signature du beneficiaire', 330, top + 170);
       pdf.moveTo(55, top + 215).lineTo(260, top + 215).stroke();
@@ -158,6 +154,8 @@ function buildTemplateData({ type, profile, data, reference }) {
   if (typeof supplied.repartition_texte === 'string') {
     result.repartition = parseTextRows(supplied.repartition_texte, ['repartition_habitant', 'repartition_chambre', 'repartition_montant']);
   }
+  const repartitionTotal = (result.repartition || []).reduce((sum, row) => sum + Number(String(row.repartition_montant || '').replace(/\D/g, '') || 0), 0);
+  result.repartition_total = get('repartition_total') || amount(repartitionTotal);
   const person = (prefix, source) => {
     const fullName = get(`${source}_nom_complet`, `nom_${source}`, `${source}_nom_prenom`);
     const nameParts = fullName.split(/\s+/).filter(Boolean);
@@ -213,12 +211,10 @@ function buildTemplateData({ type, profile, data, reference }) {
     ? parseList(supplied.niveaux)
     : parseTextRows(supplied.niveaux_texte, ['niveau_libelle', 'niveau_description']);
   result.regime_solidaire = ['solidaire', 'collective', 'avec', 'oui'].includes(get('solidarite', 'regime_responsabilite').toLowerCase());
-  result.gestionnaire_nom_prenom = profile === 'professionnel'
-    ? get('nom_entreprise', 'mandataire_denomination', 'nom_demandeur')
-    : get('nom_demandeur');
-  result.gestionnaire_piece_identite = get('cin_demandeur');
+  result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom', 'nom_demandeur', 'representant', 'nom_entreprise');
+  result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur', 'nif');
   result.gestionnaire_contact = get('telephone_demandeur', 'email_demandeur');
-  result.gestionnaire_date_naissance = displayDate(get('date_naissance_demandeur'));
+  result.gestionnaire_date_naissance = displayDate(get('gestionnaire_date_naissance', 'date_naissance_demandeur'));
   result.gestionnaire_qualite = profile === 'locataire' ? 'Occupant principal' : profile === 'proprietaire' ? 'Propriétaire' : 'Mandataire';
   result.gestionnaire_proprietaire = profile === 'proprietaire';
   result.gestionnaire_occupant_principal = profile === 'locataire';
@@ -256,6 +252,11 @@ function buildTemplateData({ type, profile, data, reference }) {
   } else if (profile === 'proprietaire') {
     person('bailleur', 'demandeur');
     result.bailleur_denomination = get('bailleur_denomination', 'nom_entreprise', 'nom_demandeur');
+    result.bailleur_forme_juridique = get('bailleur_forme_juridique', 'forme_juridique');
+    result.bailleur_nif = get('bailleur_nif', 'nif');
+    result.bailleur_rcs = get('bailleur_rcs', 'rcs');
+    result.bailleur_stat = get('bailleur_stat', 'stat');
+    result.bailleur_siege = get('bailleur_siege', 'adresse_entreprise');
     result.bailleur_representant = get('bailleur_representant', 'representant');
     result.bailleur_representant_qualite = get('bailleur_representant_qualite', 'representant_qualite');
     person('locataire', 'autre_partie');
@@ -275,8 +276,8 @@ function buildTemplateData({ type, profile, data, reference }) {
   }
 
   if (type === 'edl') {
-    result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom', 'nom_demandeur');
-    result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur');
+    result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom', 'nom_demandeur', 'representant', 'nom_entreprise');
+    result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur', 'nif');
     result.gestionnaire_contact = get('gestionnaire_contact', 'telephone_demandeur', 'email_demandeur');
     result.gestionnaire_qualite = profile === 'locataire' ? 'Occupant principal' : profile === 'proprietaire' ? 'Propriétaire' : 'Mandataire';
     result.locataire_nom = get('locataire_nom', 'nom_autre_partie');
@@ -306,11 +307,12 @@ async function renderContratsImmoPdf(options) {
     if (annex.title) documents.push(await annexCoverPdf(annex.title));
     documents.push(annex.pdfBuffer);
   }
-  documents.push(mainPdf, edlPdf);
+  documents.push(mainPdf, await annexCoverPdf('ANNEXE 2 : ÉTAT DES LIEUX D’ENTRÉE'), edlPdf);
   const templateIds = [templateId, 'etat_des_lieux'];
   for (const [field, auxiliaryId] of [['inclure_charte', 'charte_colocation'], ['inclure_attestation_logement', 'attestation_logement']]) {
     if (options.data?.[field] !== 'oui') continue;
     const auxiliaryDocx = renderContratsImmoDocx(auxiliaryId, fields, templateEdits[auxiliaryId]);
+    if (auxiliaryId === 'charte_colocation') documents.push(await annexCoverPdf('ANNEXE 3 : CHARTE DE COLOCATION'));
     documents.push(await convertContratsImmoDocxToPdf(auxiliaryDocx));
     templateIds.push(auxiliaryId);
   }
