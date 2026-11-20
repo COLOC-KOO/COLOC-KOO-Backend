@@ -17,6 +17,11 @@ command -v gs
 find /usr/share/color/icc -type f -iname '*rgb*.icc' -print
 ```
 
+LibreOffice convertit les modèles Word en PDF sur le serveur. Pour l’aperçu,
+Ghostscript transforme ensuite chaque page en image affichée dans l’application :
+les utilisateurs n’ont pas besoin d’un lecteur PDF natif sur leur appareil et le
+PDF source n’est pas transmis au navigateur.
+
 Si `sudo` n'existe pas et que le compte n'est pas root, l'installation doit être faite par l'administrateur OVH ou la personne qui administre le VPS. Ne pas lancer les commandes d'installation depuis Git Bash sur Windows.
 
 ### 2. Configurer et lancer le backend
