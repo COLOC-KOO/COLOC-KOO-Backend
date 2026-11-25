@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { query, withTransaction } = require('../Services/db.service');
-const { mapCityResult } = require('../Services/osmCities.service');
+const { mapCityResult, mergeCitySuggestions } = require('../Services/osmCities.service');
 const { requireAuth } = require('../Middleware/auth.middleware');
 
 // Simple in-memory cache to reduce requests to Nominatim
@@ -47,27 +47,52 @@ function requestNominatim(url) {
 async function searchCities(req, res, next) {
   try {
     const q = String(req.query.q || '').trim().replace(/\s+/g, ' ');
-    if (q.length < 3) return res.json([]);
+    if (!q) return res.json([]);
     if (q.length > 100) return res.status(400).json({ message: 'Recherche de ville trop longue.' });
 
     const cacheKey = `cities:${q.toLocaleLowerCase('fr')}`;
     if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
 
-    const params = new URLSearchParams({
-      q: `${q}, Madagascar`,
-      format: 'jsonv2',
-      addressdetails: '1',
-      countrycodes: 'mg',
-      featuretype: 'city',
-      limit: '8',
-    });
-    const results = await requestNominatim(`https://nominatim.openstreetmap.org/search?${params}`);
-    const cities = (Array.isArray(results) ? results : [])
-      .map(mapCityResult)
-      .filter(Boolean);
-    cache.set(cacheKey, cities);
-    setTimeout(() => cache.delete(cacheKey), 24 * 60 * 60 * 1000);
-    res.json(cities);
+    const prefix = q.replace(/[!%_]/g, '!$&');
+    const localCities = await query(
+      `SELECT v.id_ville, v.nom_ville, v.id_region, r.nom_region
+       FROM villes v
+       JOIN regions r ON r.id_region = v.id_region
+       WHERE v.nom_ville LIKE ? ESCAPE '!'
+       ORDER BY v.nom_ville
+       LIMIT 5`,
+      [`${prefix}%`]
+    ).then((rows) => rows.map((city) => ({
+      ...city,
+      id_ville: Number(city.id_ville),
+      id_region: Number(city.id_region),
+    })));
+
+    let osmCities = [];
+    if (q.length >= 3) {
+      const params = new URLSearchParams({
+        q: `${q}, Madagascar`,
+        format: 'jsonv2',
+        addressdetails: '1',
+        countrycodes: 'mg',
+        featuretype: 'city',
+        limit: '8',
+      });
+      try {
+        const results = await requestNominatim(`https://nominatim.openstreetmap.org/search?${params}`);
+        osmCities = (Array.isArray(results) ? results : [])
+          .map(mapCityResult)
+          .filter(Boolean);
+      } catch (error) {
+        if (!localCities.length) throw error;
+        console.warn('[geocode] Nominatim city search failed; returning local matches.', error.message);
+      }
+    }
+
+    const suggestions = mergeCitySuggestions(localCities, osmCities, q);
+    cache.set(cacheKey, suggestions);
+    setTimeout(() => cache.delete(cacheKey), 60 * 60 * 1000);
+    res.json(suggestions);
   } catch (err) {
     next(err);
   }

@@ -1,5 +1,29 @@
 const CITY_TYPES = new Set(['city', 'town', 'village', 'municipality']);
 
+function normalizeCityName(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLocaleLowerCase('fr');
+}
+
+function mergeCitySuggestions(localCities, osmCities, query, limit = 8) {
+  const prefix = normalizeCityName(query);
+  const suggestions = [];
+  const seen = new Set();
+
+  for (const city of [...localCities, ...osmCities]) {
+    const name = normalizeCityName(city.nom_ville);
+    if (!name.startsWith(prefix) || seen.has(name)) continue;
+    seen.add(name);
+    suggestions.push(city);
+    if (suggestions.length >= limit) break;
+  }
+
+  return suggestions;
+}
+
 function mapCityResult(result) {
   const category = result?.class || result?.category;
   if (!result || category !== 'place' || !CITY_TYPES.has(result.type)) return null;
@@ -37,4 +61,4 @@ function mapCityResult(result) {
   };
 }
 
-module.exports = { mapCityResult };
+module.exports = { mapCityResult, mergeCitySuggestions };

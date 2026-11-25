@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mapCityResult } = require('../src/Services/osmCities.service');
+const { mapCityResult, mergeCitySuggestions } = require('../src/Services/osmCities.service');
 
 test('maps a Nominatim jsonv2 city result for Madagascar', () => {
   const city = mapCityResult({
@@ -46,4 +46,33 @@ test('rejects non-city places and results outside Madagascar', () => {
     type: 'city',
     address: { ...result.address, country_code: 'fr' },
   }), null);
+});
+
+test('combines local and OSM cities, preferring local rows and removing duplicates', () => {
+  const local = [
+    { id_ville: 4, nom_ville: 'Antsirabe', nom_region: 'Vakinankaratra' },
+  ];
+  const osm = [
+    { osm_type: 'N', osm_id: 1, nom_ville: 'Antsirabe', nom_region: 'Vakinankaratra' },
+    { osm_type: 'N', osm_id: 2, nom_ville: 'Antsiranana', nom_region: 'Diana' },
+    { osm_type: 'N', osm_id: 3, nom_ville: 'Antananarivo', nom_region: 'Analamanga' },
+    { osm_type: 'N', osm_id: 4, nom_ville: 'Toamasina', nom_region: 'Atsinanana' },
+  ];
+
+  const suggestions = mergeCitySuggestions(local, osm, 'Ant', 8);
+
+  assert.deepEqual(suggestions, [local[0], osm[1], osm[2]]);
+});
+
+test('prefix matching ignores accents and excludes names that do not start with the query', () => {
+  const cities = [
+    { nom_ville: 'Fenoarivo Atsinanana' },
+    { nom_ville: 'Fianarantsoa' },
+    { nom_ville: 'Antananarivo' },
+  ];
+
+  assert.deepEqual(
+    mergeCitySuggestions([], cities, 'feno', 8),
+    [cities[0]],
+  );
 });
