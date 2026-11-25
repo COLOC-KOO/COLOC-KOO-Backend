@@ -62,19 +62,14 @@ async function list(req, res, next) {
       }
     }
     if (ville) {
-      const aliasPatterns = hasToliaraSearchAlias(ville)
-        ? ['%toliara%', '%tulear%', '%tuléar%', '%toliary%']
+      const cityAliases = hasToliaraSearchAlias(ville)
+        ? ['toliara', 'tulear', 'tuléar', 'toliary']
         : [];
       clauses.push(`(
-        LOWER(v.nom_ville) LIKE ?
-        ${aliasPatterns.map(() => 'OR LOWER(v.nom_ville) LIKE ?').join('\n        ')}
-        OR LOWER(COALESCE(a.quartier, '')) LIKE ?
-        OR LOWER(COALESCE(a.adresse_exacte, '')) LIKE ?
-        OR LOWER(COALESCE(a.titre, '')) LIKE ?
+        LOWER(TRIM(v.nom_ville)) = LOWER(TRIM(?))
+        ${cityAliases.map(() => 'OR LOWER(TRIM(v.nom_ville)) = ?').join('\n        ')}
       )`);
-      const placeLike = `%${String(ville).toLowerCase()}%`;
-      values.push(placeLike, ...aliasPatterns);
-      values.push(placeLike, placeLike, placeLike);
+      values.push(String(ville).toLowerCase(), ...cityAliases);
     }
     if (quartier) {
       clauses.push(`(
