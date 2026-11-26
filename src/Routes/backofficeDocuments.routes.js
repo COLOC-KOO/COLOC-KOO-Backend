@@ -6,6 +6,8 @@ router.use(requireAuth, requireRole('admin', 'super_admin', 'moderator'));
 router.get('/clauses', controller.listBackofficeClauses);
 router.post('/clauses', controller.createBackofficeClause);
 router.patch('/clauses/:id', controller.updateBackofficeClause);
+router.get('/templates/:templateId', requireRole('super_admin'), controller.listBackofficeTemplates);
+router.put('/templates/:templateId', requireRole('super_admin'), controller.saveBackofficeTemplate);
 router.get('/', controller.listBackoffice);
 router.get('/:id/payment-proof', controller.getBackofficePaymentProof);
 router.get('/:id/document-preview', controller.getBackofficeDocumentPreview);

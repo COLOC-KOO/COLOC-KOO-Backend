@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS `empreintes_documents_contractuels` (
   `id_empreinte` BIGINT NOT NULL AUTO_INCREMENT,
   `id_demande` INT NOT NULL,
   `id_utilisateur` INT NOT NULL,
-  `type_pdf` ENUM('copie_chiffree') NOT NULL,
+`type_pdf` VARCHAR(30) NOT NULL,
   `sha256` CHAR(64) NOT NULL,
   `date_creation` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id_empreinte`),

@@ -1,4 +1,4 @@
-const { query, insertAndGetId } = require('../Services/db.service');
+const { query, insertAndGetId, withTransaction } = require('../Services/db.service');
 const { ensureContractContent, getConfigValue } = require('./meta.controller');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,11 +8,28 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const PDFDocument = require('pdfkit');
 const { renderContratsImmoPdf } = require('../Services/contrats-immo-data.service');
-const { TEMPLATES } = require('../Services/contrats-immo-template.service');
+const {
+  TEMPLATES,
+  TEMPLATE_TITLES,
+  getTemplateParagraphs,
+  validateTemplateEdits,
+} = require('../Services/contrats-immo-template.service');
 
 const PROFILE_ROLES = new Set(['locataire', 'proprietaire', 'professionnel']);
+const MAIN_TEMPLATE_PROFILE = {
+  contrat_intercolocs: 'locataire',
+  contrat_propriocolocs: 'proprietaire',
+  contrat_mandacolocs: 'professionnel',
+};
+const AUXILIARY_TEMPLATE_PROFILES = {
+  autorisation_colocation: ['locataire', 'proprietaire', 'professionnel'],
+  avenant_substitution: ['locataire', 'proprietaire'],
+  mandat_gestion: ['proprietaire', 'professionnel'],
+};
 const PAYMENT_PROOFS_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-payment-proofs');
 const DOCUMENT_ARCHIVES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-archives');
+const DOCUMENT_ANNEXES_DIR = path.join(__dirname, '..', '..', 'private_uploads', 'document-annexes');
+const DOCUMENT_DATA_KEY_PATH = path.join(__dirname, '..', '..', 'private_uploads', 'document-data.key');
 const execFileAsync = promisify(execFile);
 
 async function ensureDocumentRequestsSchema() {
@@ -49,7 +66,7 @@ async function ensureDocumentRequestsSchema() {
       id_empreinte BIGINT NOT NULL AUTO_INCREMENT,
       id_demande INT NOT NULL,
       id_utilisateur INT NOT NULL,
-      type_pdf ENUM('copie_chiffree') NOT NULL,
+      type_pdf VARCHAR(30) NOT NULL,
       sha256 CHAR(64) NOT NULL,
       date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id_empreinte),
@@ -57,6 +74,25 @@ async function ensureDocumentRequestsSchema() {
       KEY idx_empreintes_sha256 (sha256)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS revisions_modeles_documents_contractuels (
+      id_revision BIGINT NOT NULL AUTO_INCREMENT,
+      template_id VARCHAR(60) NOT NULL,
+      numero_revision INT NOT NULL,
+      modifications JSON NOT NULL,
+      sha256 CHAR(64) NOT NULL,
+      actif TINYINT(1) NOT NULL DEFAULT 1,
+      id_utilisateur INT NOT NULL,
+      date_creation DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id_revision),
+      UNIQUE KEY uq_modele_revision (template_id, numero_revision),
+      KEY idx_modele_actif (template_id, actif, numero_revision)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  const fingerprintType = await query("SHOW COLUMNS FROM empreintes_documents_contractuels LIKE 'type_pdf'");
+  if (String(fingerprintType[0]?.Type || '').toLowerCase().startsWith('enum(')) {
+    await query("ALTER TABLE empreintes_documents_contractuels MODIFY COLUMN type_pdf VARCHAR(30) NOT NULL");
+  }
   const snapshotColumn = await query(
     "SHOW COLUMNS FROM demandes_documents_contractuels LIKE 'clauses_snapshot'"
   );
@@ -83,6 +119,127 @@ async function ensureDocumentRequestsSchema() {
       await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
     }
   }
+  const deletedColumn = await query("SHOW COLUMNS FROM demandes_documents_contractuels LIKE 'client_deleted'");
+  if (!deletedColumn.length) {
+    await query("ALTER TABLE demandes_documents_contractuels ADD COLUMN client_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER archive_generated_at");
+  }
+  for (const [name, definition] of [
+    ['download_token_hash', 'CHAR(64) NULL AFTER client_deleted'],
+    ['download_token_expires_at', 'DATETIME NULL AFTER download_token_hash'],
+    ['autorisation_filename', 'VARCHAR(80) NULL AFTER download_token_expires_at'],
+    ['mandat_filename', 'VARCHAR(80) NULL AFTER autorisation_filename'],
+  ]) {
+    const column = await query(`SHOW COLUMNS FROM demandes_documents_contractuels LIKE '${name}'`);
+    if (!column.length) await query(`ALTER TABLE demandes_documents_contractuels ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+function parseTemplateEdits(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getActiveTemplateEdits() {
+  const rows = await query('SELECT template_id, modifications FROM revisions_modeles_documents_contractuels WHERE actif = 1');
+  return Object.fromEntries(rows.map((row) => [row.template_id, parseTemplateEdits(row.modifications)]));
+}
+
+async function listBackofficeTemplates(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const templateId = req.params.templateId;
+    if (!Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) {
+      return res.status(404).json({ message: 'Modèle introuvable.' });
+    }
+    const [history] = await Promise.all([
+      query('SELECT id_revision, numero_revision, modifications, sha256, actif, date_creation FROM revisions_modeles_documents_contractuels WHERE template_id = ? ORDER BY numero_revision DESC LIMIT 30', [templateId]),
+    ]);
+    res.json({
+      template: { id: templateId, title: TEMPLATE_TITLES[templateId] },
+      paragraphs: getTemplateParagraphs(templateId),
+      revisions: history.map((revision) => ({
+        id: revision.id_revision,
+        version: revision.numero_revision,
+        edits: parseTemplateEdits(revision.modifications),
+        sha256: revision.sha256,
+        active: Boolean(revision.actif),
+        created_at: revision.date_creation,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function saveBackofficeTemplate(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const templateId = req.params.templateId;
+    if (!Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) {
+      return res.status(404).json({ message: 'Modèle introuvable.' });
+    }
+    let edits;
+    try {
+      edits = validateTemplateEdits(templateId, req.body?.edits);
+    } catch (error) {
+      return res.status(400).json({ message: error.message || 'Modifications du modèle invalides.' });
+    }
+    const serialized = JSON.stringify(edits);
+    const sha256 = crypto.createHash('sha256').update(serialized).digest('hex');
+    const revision = await withTransaction(async (tx) => {
+      const rows = await tx('SELECT numero_revision AS latest FROM revisions_modeles_documents_contractuels WHERE template_id = ? ORDER BY numero_revision DESC LIMIT 1 FOR UPDATE', [templateId]);
+      const nextVersion = Number(rows[0]?.latest || 0) + 1;
+      await tx('UPDATE revisions_modeles_documents_contractuels SET actif = 0 WHERE template_id = ? AND actif = 1', [templateId]);
+      const inserted = await tx(
+        'INSERT INTO revisions_modeles_documents_contractuels (template_id, numero_revision, modifications, sha256, actif, id_utilisateur) VALUES (?, ?, ?, ?, 1, ?)',
+        [templateId, nextVersion, serialized, sha256, currentUserId(req)]
+      );
+      return { id: inserted.insertId, version: nextVersion };
+    });
+    res.status(201).json({ ok: true, ...revision, sha256 });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function documentDataKey() {
+  await fs.promises.mkdir(path.dirname(DOCUMENT_DATA_KEY_PATH), { recursive: true, mode: 0o700 });
+  try {
+    const key = await fs.promises.readFile(DOCUMENT_DATA_KEY_PATH);
+    if (key.length === 32) return key;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const key = crypto.randomBytes(32);
+  try {
+    await fs.promises.writeFile(DOCUMENT_DATA_KEY_PATH, key, { flag: 'wx', mode: 0o600 });
+    return key;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    return documentDataKey();
+  }
+}
+
+async function encryptRequestData(data) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', await documentDataKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  return JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
+}
+
+async function decryptRequestData(value) {
+  const envelope = parseJson(value, {});
+  if (!envelope?.v || !envelope.iv || !envelope.tag || !envelope.data) return envelope;
+  const decipher = crypto.createDecipheriv('aes-256-gcm', await documentDataKey(), Buffer.from(envelope.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8');
+  return JSON.parse(plain);
 }
 
 function currentUserId(req) {
@@ -102,19 +259,115 @@ function parseJson(value, fallback) {
 function validateData(type, profile, data, templateId) {
   const isMainContract = ['contrat_intercolocs', 'contrat_propriocolocs', 'contrat_mandacolocs'].includes(templateId);
   if (templateId && !Object.prototype.hasOwnProperty.call(TEMPLATES, templateId)) return ['template_id'];
-  if (templateId && !isMainContract) {
+  if (isMainContract && type !== 'contrat') return ['type_document'];
+  if (isMainContract && MAIN_TEMPLATE_PROFILE[templateId] !== profile) return ['template_id / profil_demandeur'];
+  if (templateId === 'etat_des_lieux' && type !== 'edl') return ['type_document'];
+  if (type === 'edl' && templateId !== 'etat_des_lieux') return ['template_id / type_document'];
+  if (AUXILIARY_TEMPLATE_PROFILES[templateId] && !AUXILIARY_TEMPLATE_PROFILES[templateId].includes(profile)) return ['template_id / profil_demandeur'];
+  if (templateId && !isMainContract && type !== 'edl') {
     const entries = Object.entries(data || {});
     if (!entries.some(([, value]) => typeof value === 'string' ? value.trim() : Array.isArray(value) && value.length > 0)) return ['donnees'];
     if (entries.some(([, value]) => typeof value !== 'string' || value.length > 4000)) return ['donnees'];
-    return [];
+    const issues = [];
+    const requireFields = (keys) => keys.forEach((key) => { if (!String(data[key] || '').trim()) issues.push(key); });
+    const requireBoolean = (key) => { if (!['true', 'false'].includes(String(data[key] || '').toLowerCase())) issues.push(key); };
+    const requirePositiveNumber = (key) => { if (!/^\d+(?:\.\d+)?$/.test(String(data[key] || '')) || Number(data[key]) <= 0) issues.push(key); };
+    const requireOneOption = (keys, label) => {
+      if (keys.filter((key) => data[key] === 'true').length !== 1) issues.push(`${label} (choisir une seule option)`);
+    };
+    const auxiliaryRequired = {
+      autorisation_colocation: ['bail_date_effet', 'bail_duree', 'proprietaire_nom', 'proprietaire_adresse', 'proprietaire_piece_identite', 'op_nom', 'op_prenom', 'op_date_naissance', 'op_ville_naissance', 'op_pays_naissance', 'op_piece_identite', 'op_telephone', 'op_email', 'logement_adresse', 'logement_code_postal', 'logement_ville'],
+      mandat_gestion: ['mandant_nom', 'mandant_adresse', 'mandant_piece_identite', 'mandataire_denomination', 'mandataire_forme_juridique', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_siege', 'mandataire_representant', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'colocs_nombre_max', 'loyer_total', 'depot_mois', 'reversement_delai_jours', 'mandat_preavis'],
+      avenant_substitution: ['autorisation_date', 'proprietaire_nom', 'proprietaire_adresse', 'proprietaire_piece_identite', 'op_sortant_nom', 'op_sortant_adresse', 'op_sortant_piece_identite', 'op_nouveau_nom', 'op_nouveau_adresse', 'op_nouveau_piece_identite', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'date_effet'],
+      charte_colocation: ['logement_adresse', 'logement_code_postal', 'logement_ville', 'locataire_nom', 'locataire_prenom'],
+      attestation_logement: ['gestionnaire_nom_prenom', 'gestionnaire_date_naissance', 'gestionnaire_piece_identite', 'logement_adresse', 'logement_code_postal', 'logement_ville', 'locataire_nom', 'locataire_prenom', 'locataire_date_naissance', 'locataire_piece_identite', 'date_effet'],
+    };
+    requireFields(auxiliaryRequired[templateId] || []);
+    if (templateId === 'autorisation_colocation') {
+      for (const key of ['represente_par_mandataire', 'colocs_par_piece', 'validation_proprietaire', 'regime_solidaire', 'revocation_un_mois']) requireBoolean(key);
+      if (data.represente_par_mandataire === 'true') requireFields(['mandataire_denomination', 'mandataire_forme_juridique', 'mandataire_nif', 'mandataire_rcs', 'mandataire_stat', 'mandataire_siege', 'mandataire_representant']);
+      if (data.colocs_par_piece === 'false') requirePositiveNumber('colocs_nombre_total');
+      if (data.validation_proprietaire === 'true') requirePositiveNumber('validation_delai_jours');
+      if (data.validation_proprietaire === 'false' && data.regime_solidaire !== 'true') issues.push('regime_solidaire (obligatoirement solidaire si le gestionnaire choisit seul)');
+      if (data.revocation_un_mois === 'false') requirePositiveNumber('revocation_preavis_mois');
+      requireOneOption(['retribution_marge', 'retribution_reduction', 'retribution_aucune'], 'retribution');
+      if (data.retribution_marge === 'true') requireFields(['retribution_marge_valeur']);
+      if (data.retribution_reduction === 'true') requireFields(['retribution_reduction_valeur', 'loyer_total']);
+    }
+    if (templateId === 'mandat_gestion') {
+      for (const key of ['regime_solidaire', 'validation_proprietaire', 'remu_mensuelle_forfait', 'depot_par_colocataire', 'mandat_duree_3_ans', 'pouvoir_selection', 'pouvoir_etats_des_lieux', 'pouvoir_perception', 'pouvoir_entrees_sorties', 'pouvoir_gestion_courante']) requireBoolean(key);
+      if (data.validation_proprietaire === 'true') requirePositiveNumber('validation_delai_jours');
+      requireOneOption(['remu_ponctuelle_forfait', 'remu_ponctuelle_pourcentage', 'remu_ponctuelle_aucune'], 'remu_ponctuelle');
+      if (data.remu_ponctuelle_forfait === 'true') requirePositiveNumber('remu_ponctuelle_montant');
+      if (data.remu_ponctuelle_pourcentage === 'true') requirePositiveNumber('remu_ponctuelle_taux');
+      if (data.remu_mensuelle_forfait === 'true') requirePositiveNumber('remu_mensuelle_montant');
+      if (data.remu_mensuelle_forfait === 'false') requirePositiveNumber('remu_mensuelle_taux');
+      if (data.mandat_duree_3_ans === 'false') requireFields(['mandat_duree_autre']);
+      for (const key of ['colocs_nombre_max', 'loyer_total', 'depot_mois', 'reversement_delai_jours']) requirePositiveNumber(key);
+      if (data.repartition_texte) {
+        const repartition = String(data.repartition_texte).split(/\r?\n/).filter(Boolean);
+        if (repartition.length > 7 || repartition.some((line) => line.split('|').length < 3 || !line.split('|')[0].trim() || !line.split('|')[1].trim() || !/^\d+$/.test(line.split('|')[2].replace(/\s/g, '')))) issues.push('repartition_texte');
+      }
+    }
+    if (templateId === 'avenant_substitution') {
+      for (const key of ['op_nouveau_etait_sous_occupant', 'regime_solidaire', 'retribution_reconduite']) requireBoolean(key);
+      if (data.op_nouveau_etait_sous_occupant === 'true') requireFields(['op_nouveau_date_contrat_intercolocs']);
+      if (String(data.sous_occupants_texte || '').trim()) {
+        const occupants = String(data.sous_occupants_texte).split(/\r?\n/).filter((line) => line.trim());
+        if (occupants.length > 7 || occupants.some((line) => {
+          const [name, date] = line.split('|').map((part) => part.trim());
+          if (!name || !/^\d{2}\/\d{2}\/\d{4}$/.test(date || '')) return true;
+          const [, day, month, year] = date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+          const parsedDate = new Date(Number(year), Number(month) - 1, Number(day));
+          return parsedDate.getFullYear() !== Number(year) || parsedDate.getMonth() !== Number(month) - 1 || parsedDate.getDate() !== Number(day);
+        })) issues.push('sous_occupants_texte (7 lignes maximum, nom | date JJ/MM/AAAA)');
+      }
+      if (data.retribution_reconduite === 'false') {
+        requireOneOption(['retribution_marge', 'retribution_reduction', 'retribution_aucune'], 'retribution');
+        if (data.retribution_marge === 'true') requireFields(['retribution_marge_valeur']);
+        if (data.retribution_reduction === 'true') requireFields(['retribution_reduction_valeur', 'loyer_total']);
+      }
+    }
+    if (templateId === 'charte_colocation') {
+      for (const key of ['tranquillite_21h_6h', 'invites_3_6', 'menage_planning', 'tabac_exterieur', 'tabac_interieur_communs', 'tabac_interieur_privatifs', 'tabac_espaces_designes']) requireBoolean(key);
+      if (data.tranquillite_21h_6h === 'false') requireFields(['tranquillite_debut', 'tranquillite_fin']);
+      if (data.invites_3_6 === 'false') requirePositiveNumber('invites_limite_nuits');
+      if (data.tabac_espaces_designes === 'true') requireFields(['tabac_espaces']);
+    }
+    if (['autorisation_colocation', 'avenant_substitution'].includes(templateId)) {
+      const reduction = String(data.retribution_reduction_valeur || '').trim();
+      if (data.retribution_reduction === 'true') {
+        const match = reduction.match(/^(\d+(?:[.,]\d{1,2})?)\s*(%|ar)?$/i);
+        const amount = match ? Number(match[1].replace(',', '.')) : NaN;
+        const rent = Number(String(data.loyer_total || data.loyer || '').replace(/\s/g, ''));
+        const isRate = match?.[2] === '%';
+        if (!match || !Number.isFinite(amount) || amount <= 0 || !Number.isFinite(rent) || rent <= 0 || (isRate ? amount > 10 : amount > rent * 0.1)) {
+          issues.push('retribution_reduction_valeur (montant requis, maximum 10 % du loyer total)');
+        }
+      }
+      if (['autorisation_colocation', 'avenant_substitution'].includes(templateId) && (data.regime_solidaire === 'false' || data.regime_solidaire === false) && data.retribution_marge === 'true') {
+        issues.push('retribution_marge (indisponible en régime individuel)');
+      }
+    }
+    if (templateId === 'mandat_gestion' && data.repartition_texte) {
+      const rows = String(data.repartition_texte).split(/\r?\n/).filter(Boolean);
+      if (rows.length > 7) issues.push('repartition_texte (7 lignes maximum)');
+    }
+    return issues;
   }
   const required = [
-    'adresse', 'code_postal', 'ville', 'type_bien', 'nom_demandeur', 'telephone_demandeur',
-    'email_demandeur', 'nom_autre_partie', 'telephone_autre_partie',
-    'email_autre_partie', 'date_entree',
+    'adresse', 'code_postal', 'ville', 'telephone_demandeur',
+    'nom_autre_partie', 'cin_autre_partie', 'telephone_autre_partie',
   ];
+  if (type === 'contrat') required.push('type_bien', 'email_demandeur', 'email_autre_partie');
+  if (type === 'contrat') required.push('date_entree');
+  if (profile !== 'professionnel' || type === 'edl') required.push('nom_demandeur');
+  if (type === 'contrat') required.push('prenom_autre_partie');
+  if (type === 'contrat' && !(profile === 'proprietaire' && data?.personne_morale === 'oui')) required.push('prenom_demandeur');
+  if (type === 'edl' || (profile !== 'professionnel' && !(profile === 'proprietaire' && data?.personne_morale === 'oui'))) required.push('cin_demandeur');
+  if (type === 'contrat' && data?.inclure_attestation_logement === 'oui' && (profile === 'professionnel' || profile === 'proprietaire' && data?.personne_morale === 'oui')) required.push('cin_demandeur');
   if (type === 'contrat') required.push('loyer');
-  if (profile === 'professionnel') required.push('nom_entreprise', 'representant');
+  if (type === 'contrat' && profile === 'professionnel') required.push('nom_entreprise', 'representant');
   const invalid = Object.entries(data || {})
     .filter(([key, value]) => typeof value !== 'string' || value.length > 4000)
     .map(([key]) => key);
@@ -124,7 +377,7 @@ function validateData(type, profile, data, templateId) {
   const invalidIdentityFields = [];
   for (const key of ['cin_demandeur', 'cin_autre_partie']) {
     const value = String(data?.[key] ?? '');
-    if (value && !/^\d{1,12}$/.test(value)) invalidIdentityFields.push(key);
+    if (value && !/^[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9 ._/-]{0,39}$/.test(value)) invalidIdentityFields.push(key);
   }
   for (const key of ['telephone_demandeur', 'telephone_autre_partie']) {
     const value = String(data?.[key] ?? '');
@@ -134,43 +387,73 @@ function validateData(type, profile, data, templateId) {
   if (type === 'contrat') {
     const tunnelRequired = [
       'nombre_colocataires', 'choix_colocataires', 'solidarite', 'meuble', 'duree_bail',
-      'mois_depot', 'periodicite_revision', 'niveaux_texte', 'espace_privatif_description', 'charges_avec', 'modes_reglement',
+      'mois_depot', 'periodicite_revision', 'niveaux_texte', 'espace_privatif_description', 'observations', 'charges_avec', 'modes_reglement',
       'taux_revision', 'preavis_bailleur', 'jour_paiement', 'salle_bain_privee',
     ];
-    if (profile !== 'professionnel') tunnelRequired.push('date_naissance_demandeur', 'ville_naissance_demandeur', 'pays_naissance_demandeur');
+    if (profile !== 'professionnel' && !(profile === 'proprietaire' && data?.personne_morale === 'oui')) tunnelRequired.push('date_naissance_demandeur', 'ville_naissance_demandeur', 'pays_naissance_demandeur');
     tunnelRequired.push('date_naissance_autre_partie', 'ville_naissance_autre_partie', 'pays_naissance_autre_partie');
-    if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article');
+    tunnelRequired.push('inclure_charte', 'inclure_attestation_logement');
+    const acceptsCash = String(data?.modes_reglement || '').split(';').some((method) => method.trim() === 'Espèces');
+    if (acceptsCash) tunnelRequired.push('inclure_attestation_especes');
+    else if (data?.inclure_attestation_especes === 'oui') invalidTunnel.push('inclure_attestation_especes (espèces non sélectionnées)');
+    if (profile === 'locataire') tunnelRequired.push('bail_principal_proprietaire', 'bail_principal_date_effet', 'bail_principal_duree', 'bail_principal_date_fin', 'bail_principal_article', 'autorisation_signee');
+    if (profile === 'locataire' && data?.autorisation_signee !== 'oui') invalidTunnel.push('autorisation_signee');
+    if (profile === 'locataire') tunnelRequired.push('revision_date_anniversaire');
+    if (profile === 'proprietaire' || profile === 'professionnel') {
+      tunnelRequired.push('statut_proprietaire');
+      if (!['proprietaire', 'titulaire_droits'].includes(data?.statut_proprietaire)) invalidTunnel.push('statut_proprietaire');
+    }
+    const ownerValidatesOccupant = ['gestionnaire_presel_proprietaire_valide', 'mandant_valide'].includes(data?.choix_colocataires);
+    if (ownerValidatesOccupant) tunnelRequired.push('delai_validation');
     for (const key of tunnelRequired) if (!String(data?.[key] ?? '').trim()) invalidTunnel.push(key);
+    if (data?.inclure_charte === 'oui') {
+      for (const key of ['tranquillite_21h_6h', 'invites_3_6', 'menage_planning', 'tabac_exterieur', 'tabac_interieur_communs', 'tabac_interieur_privatifs', 'tabac_espaces_designes']) {
+        if (!['oui', 'non', 'true', 'false'].includes(String(data?.[key] ?? '').toLowerCase())) invalidTunnel.push(key);
+      }
+      if (data?.tranquillite_21h_6h === 'non' && (!data.tranquillite_debut || !data.tranquillite_fin)) invalidTunnel.push('tranquillite_debut/fin');
+      if (data?.invites_3_6 === 'non' && !data.invites_limite_nuits) invalidTunnel.push('invites_limite_nuits');
+      if (data?.tabac_espaces_designes === 'oui' && !data.tabac_espaces) invalidTunnel.push('tabac_espaces');
+    }
+    if (data?.inclure_attestation_logement === 'oui' && (profile === 'professionnel' || profile === 'proprietaire' && data?.personne_morale === 'oui') && !data.gestionnaire_date_naissance) invalidTunnel.push('gestionnaire_date_naissance');
     if (!/^\d+$/.test(String(data?.nombre_colocataires || '')) || Number(data?.nombre_colocataires) < 1) invalidTunnel.push('nombre_colocataires');
     if (!['Individuelle', 'Solidaire'].includes(data?.solidarite)) invalidTunnel.push('solidarite');
+    const allowedChooserValues = profile === 'professionnel'
+      ? ['gestionnaire_seul', 'mandant_valide']
+      : ['gestionnaire_seul', 'gestionnaire_presel_proprietaire_valide', 'proprietaire_seul'];
+    if (!allowedChooserValues.includes(data?.choix_colocataires)) invalidTunnel.push('choix_colocataires');
     if (!['oui', 'non'].includes(data?.meuble)) invalidTunnel.push('meuble');
     if (!['oui', 'non'].includes(data?.charges_avec)) invalidTunnel.push('charges_avec');
     if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
+    for (const key of ['inclure_charte', 'inclure_attestation_logement', ...(acceptsCash ? ['inclure_attestation_especes'] : [])]) {
+      if (!['oui', 'non'].includes(String(data?.[key] || '').toLowerCase())) invalidTunnel.push(key);
+    }
     if (Number(data?.loyer) <= 0) invalidTunnel.push('loyer');
     if (Number(data?.mois_depot) <= 0) invalidTunnel.push('mois_depot');
     if (Number(data?.periodicite_revision) <= 0) invalidTunnel.push('periodicite_revision');
     if (Number(data?.jour_paiement) < 1 || Number(data?.jour_paiement) > 31) invalidTunnel.push('jour_paiement');
     const levels = String(data?.niveaux_texte || '').split(/\r?\n/).map((line) => line.split('|').map((part) => part.trim()));
-    if (!levels.length || levels.some((parts) => !parts[0] || !parts[1])) invalidTunnel.push('niveaux_texte');
+    if (!levels.length || levels.length > 3 || levels.some((parts) => !parts[0] || !parts[1])) invalidTunnel.push('niveaux_texte');
     if (data?.charges_avec === 'oui') {
       const charges = String(data?.charges_lignes_texte || '').split(/\r?\n/).map((line) => line.split('|').map((part) => part.trim()));
-      if (!charges.length || charges.some((parts) => !parts[0] || !/^\d+$/.test(parts[1] || ''))) invalidTunnel.push('charges_lignes_texte');
+      if (!charges.length || charges.length > 3 || charges.some((parts) => parts.length < 3 || !parts[0] || !/^\d+$/.test(parts[1] || '') || Number(parts[1]) <= 0 || !parts[2])) invalidTunnel.push('charges_lignes_texte');
     }
     if (profile === 'professionnel') {
       if (!String(data?.nom_proprietaire || '').trim()) invalidTunnel.push('nom_proprietaire');
       if (!String(data?.adresse_proprietaire || '').trim()) invalidTunnel.push('adresse_proprietaire');
-      for (const key of ['forme_juridique', 'rcs', 'stat', 'adresse_entreprise', 'date_mandat']) {
+      if (!String(data?.cin_proprietaire || '').trim()) invalidTunnel.push('cin_proprietaire');
+      for (const key of ['nif', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise', 'representant_qualite', 'date_mandat']) {
         if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
       }
       if (data?.pouvoir_signature !== 'oui') invalidTunnel.push('pouvoir_signature');
     }
     if (profile === 'proprietaire' && data?.personne_morale === 'oui') {
-      if (!String(data?.nom_entreprise || '').trim()) invalidTunnel.push('nom_entreprise');
-      if (!String(data?.representant || '').trim()) invalidTunnel.push('representant');
-      if (!String(data?.representant_qualite || '').trim()) invalidTunnel.push('representant_qualite');
+      for (const key of ['nif', 'representant', 'forme_juridique', 'rcs', 'stat', 'adresse_entreprise']) {
+        if (!String(data?.[key] || '').trim()) invalidTunnel.push(key);
+      }
     }
-  } else if (!['oui', 'non'].includes(data?.salle_bain_privee)) {
-    invalidTunnel.push('salle_bain_privee');
+  } else {
+    if (!['oui', 'non'].includes(data?.salle_bain_privee)) invalidTunnel.push('salle_bain_privee');
+    if (!['d’entrée', 'de sortie'].includes(data?.edl_type)) invalidTunnel.push('edl_type');
   }
   return [...new Set([...missing, ...invalid, ...invalidIdentityFields, ...invalidNames, ...invalidTunnel])];
 }
@@ -462,7 +745,8 @@ function documentPdfBuffer({ reference, type, profile, data, clauses }, password
 }
 
 function postScriptString(value) {
-  return String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  return String(value).normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/[^\x20-\x7e]/g, '?')
+    .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
 async function createPdfaArchive(document) {
@@ -471,6 +755,7 @@ async function createPdfaArchive(document) {
   const outputPath = path.join(temporaryDirectory, 'archive.pdf');
   const definitionPath = path.join(temporaryDirectory, 'pdfa-definition.ps');
   const iccProfile = process.env.PDF_A_ICC_PROFILE || '/usr/share/color/icc/ghostscript/default_rgb.icc';
+  const mark = `Acheteur : ${document.buyer || '—'} · Transaction : ${document.transaction || '—'}`;
   const prefix = [
     '%!',
     `/ICCProfile (${postScriptString(iccProfile)}) def`,
@@ -487,6 +772,7 @@ async function createPdfaArchive(document) {
     '/DestOutputProfile {icc_PDFA}',
     '>> /PUT pdfmark',
     '[{Catalog} <</OutputIntents [ {OutputIntent_PDFA} ]>> /PUT pdfmark',
+    `<< /EndPage { pop pop gsave /Helvetica findfont 8 scalefont setfont 0.35 setgray 36 18 moveto (${postScriptString(mark)}) show grestore true } bind >> setpagedevice`,
   ].join('\n');
 
   try {
@@ -550,7 +836,7 @@ async function createEncryptedTemplatePdf(sourcePdf, password, ownerPassword) {
   }
 }
 
-async function renderPreviewPages(pdfBuffer) {
+async function renderPreviewPages(pdfBuffer, watermark = 'APERÇU Coloc KOO') {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'colockoo-preview-'));
   const inputPath = path.join(directory, 'preview.pdf');
   const outputPattern = path.join(directory, 'page-%03d.png');
@@ -559,14 +845,16 @@ async function renderPreviewPages(pdfBuffer) {
     await fs.promises.writeFile(inputPath, pdfBuffer, { mode: 0o600 });
     await execFileAsync(process.env.GS_BIN || 'gs', [
       '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dQUIET',
-      '-sDEVICE=png16m', '-r120', `-sOutputFile=${outputPattern}`, inputPath,
+      '-sDEVICE=png16m', '-r120', `-sOutputFile=${outputPattern}`,
+      '-c', `<< /EndPage { pop pop gsave /Helvetica findfont 9 scalefont setfont 0.45 setgray 36 18 moveto (${postScriptString(watermark)}) show grestore true } bind >> setpagedevice`,
+      '-f', inputPath,
     ], { timeout: 120000, maxBuffer: 1024 * 1024, windowsHide: true });
 
     const files = (await fs.promises.readdir(directory))
       .filter((name) => /^page-\d+\.png$/.test(name))
       .sort();
     if (!files.length) throw new Error('Ghostscript n’a rendu aucune page pour l’aperçu PDF.');
-    return await Promise.all(files.map(async (name) =>
+    return await Promise.all(files.slice(0, 2).map(async (name) =>
       (await fs.promises.readFile(path.join(directory, name))).toString('base64')
     ));
   } finally {
@@ -575,7 +863,6 @@ async function renderPreviewPages(pdfBuffer) {
 }
 
 async function createDraft(req, res, next) {
-  let generatedArchive;
   try {
     await ensureContractContent();
     await ensureDocumentRequestsSchema();
@@ -588,41 +875,34 @@ async function createDraft(req, res, next) {
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
     const clauses = await getSelectedClauses(clauseIds);
     const montant = await resolvePrice(type);
-    const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'DOC-PROVISOIRE' });
-    generatedArchive = await savePdfaArchive({ sourcePdfBuffer: rendered.pdfBuffer });
+    const encryptedData = await encryptRequestData(data);
     const id = await insertAndGetId(
       `INSERT INTO demandes_documents_contractuels
         (reference, id_utilisateur, type_document, template_id, profil_demandeur, donnees, clauses_ids, clauses_snapshot,
          archive_filename, archive_sha256, archive_generated_at, montant)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       [
         `DOC-${Date.now().toString().slice(-9)}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
         currentUserId(req),
         type,
         resolvedTemplateId,
         profile,
-        JSON.stringify({}),
+        encryptedData,
         JSON.stringify(clauses.map((clause) => clause.id_clause)),
         JSON.stringify(clauses),
-        generatedArchive.filename,
-        generatedArchive.sha256,
+        null,
+        null,
         montant,
       ]
     );
     const rows = await query('SELECT reference FROM demandes_documents_contractuels WHERE id_demande = ?', [id]);
     res.status(201).json({ id, reference: rows[0].reference, montant });
-  } catch (err) {
-    if (generatedArchive) {
-      await fs.promises.unlink(path.join(DOCUMENT_ARCHIVES_DIR, generatedArchive.filename)).catch((cleanupError) => {
-        console.error('Impossible de supprimer le document privé non rattaché à une demande :', cleanupError);
-      });
-    }
-    next(err);
-  }
+  } catch (err) { next(err); }
 }
 
 async function preview(req, res, next) {
   try {
+    await ensureDocumentRequestsSchema();
     const { type_document: type, template_id: templateId, profil_demandeur: profile, donnees: data } = req.body;
     if (!['contrat', 'edl'].includes(type) || !PROFILE_ROLES.has(profile) || !data || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ message: 'Informations d’aperçu invalides.' });
@@ -630,9 +910,17 @@ async function preview(req, res, next) {
     const resolvedTemplateId = templateId || (type === 'edl' ? 'etat_des_lieux' : undefined);
     const missing = validateData(type, profile, data, resolvedTemplateId);
     if (missing.length) return res.status(400).json({ message: `Champs obligatoires manquants : ${missing.join(', ')}.` });
-    const rendered = await renderContratsImmoPdf({ type, templateId: resolvedTemplateId, profile, data, reference: 'APERÇU' });
+    const rendered = await renderContratsImmoPdf({
+      type,
+      templateId: resolvedTemplateId,
+      profile,
+      data,
+      reference: 'APERÇU',
+      templateEdits: await getActiveTemplateEdits(),
+    });
     // Le navigateur reçoit des pages image, pas le PDF éditable ni une visionneuse native.
-    const pages = await renderPreviewPages(rendered.pdfBuffer);
+    const requester = [data.prenom_demandeur, data.nom_demandeur].filter(Boolean).join(' ') || data.representant || data.nom_entreprise || data.demandeur_nom_complet || 'Coloc KOO';
+    const pages = await renderPreviewPages(rendered.pdfBuffer, `APERÇU - ${requester}`);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.json({ pages });
@@ -645,22 +933,92 @@ async function listMine(req, res, next) {
   try {
     await ensureDocumentRequestsSchema();
     const rows = await query(
-      `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees, clauses_ids,
+      `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees, clauses_ids, client_deleted,
               montant, statut, statut_paiement, moyen_paiement, preuve_paiement, date_creation
          FROM demandes_documents_contractuels
         WHERE id_utilisateur = ?
-        ORDER BY CASE WHEN statut = 'valide' AND statut_paiement = 'conforme' THEN 0 ELSE 1 END,
-                 date_creation DESC
+        ORDER BY date_creation DESC
         LIMIT 100`,
       [currentUserId(req)]
     );
-    res.json(rows.map(({ preuve_paiement: proof, ...row }) => ({
+    res.json(rows.filter((row) => !row.client_deleted).map(({ preuve_paiement: proof, ...row }) => ({
       ...row,
-      donnees: parseJson(row.donnees, {}),
+      donnees: {},
       clauses_ids: parseJson(row.clauses_ids, []),
       has_payment_proof: Boolean(proof),
     })));
   } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteMine(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    const rows = await query('SELECT autorisation_filename, mandat_filename, preuve_paiement FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0 LIMIT 1', [id, currentUserId(req)]);
+    if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
+    const result = await query(
+      'UPDATE demandes_documents_contractuels SET client_deleted = 1, donnees = ?, clauses_ids = JSON_ARRAY(), clauses_snapshot = JSON_ARRAY(), download_token_hash = NULL, download_token_expires_at = NULL, autorisation_filename = NULL, mandat_filename = NULL, preuve_paiement = NULL WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0',
+      [JSON.stringify({}), id, currentUserId(req)]
+    );
+    if (!result.affectedRows) return res.status(404).json({ message: 'Demande introuvable.' });
+    for (const filename of [rows[0].autorisation_filename, rows[0].mandat_filename]) {
+      if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
+        await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
+      }
+    }
+    if (/^[a-f0-9]{40}\.(png|jpg|webp)$/.test(rows[0].preuve_paiement || '')) {
+      await fs.promises.unlink(path.join(PAYMENT_PROOFS_DIR, rows[0].preuve_paiement)).catch(() => {});
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+}
+
+async function uploadSignedAnnex(req, res, next) {
+  let savedPath;
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    const annexType = req.params.type;
+    if (!Number.isInteger(id) || id <= 0 || !['autorisation', 'mandat'].includes(annexType)) {
+      return res.status(400).json({ message: 'Demande ou type d’annexe invalide.' });
+    }
+    if (!Buffer.isBuffer(req.file?.buffer) || req.file.buffer.length < 8 || req.file.buffer.toString('ascii', 0, 5) !== '%PDF-') {
+      return res.status(400).json({ message: 'Joignez un fichier PDF valide.' });
+    }
+    const rows = await query(
+      `SELECT id_demande, type_document, profil_demandeur, template_id, statut, autorisation_filename, mandat_filename
+         FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1`,
+      [id, currentUserId(req)]
+    );
+    const request = rows[0];
+    if (!request) return res.status(404).json({ message: 'Demande introuvable.' });
+    if (request.statut !== 'brouillon') return res.status(409).json({ message: 'Les annexes ne peuvent être modifiées après le début du paiement.' });
+    const allowed = annexType === 'autorisation'
+      ? request.template_id === 'contrat_intercolocs' && request.profil_demandeur === 'locataire'
+      : request.template_id === 'contrat_mandacolocs' && request.profil_demandeur === 'professionnel';
+    if (!allowed) return res.status(400).json({ message: 'Cette annexe ne correspond pas au contrat sélectionné.' });
+    await fs.promises.mkdir(DOCUMENT_ANNEXES_DIR, { recursive: true, mode: 0o700 });
+    const filename = `${crypto.randomBytes(20).toString('hex')}.pdf`;
+    savedPath = path.join(DOCUMENT_ANNEXES_DIR, filename);
+    await fs.promises.writeFile(savedPath, req.file.buffer, { flag: 'wx', mode: 0o600 });
+    const column = annexType === 'autorisation' ? 'autorisation_filename' : 'mandat_filename';
+    const result = await query(`UPDATE demandes_documents_contractuels SET ${column} = ? WHERE id_demande = ? AND id_utilisateur = ? AND statut = 'brouillon'`, [filename, id, currentUserId(req)]);
+    if (!result.affectedRows) {
+      const error = new Error('La demande n’est plus modifiable.');
+      error.status = 409;
+      throw error;
+    }
+    const previous = annexType === 'autorisation' ? request.autorisation_filename : request.mandat_filename;
+    if (/^[a-f0-9]{40}\.pdf$/.test(previous || '')) {
+      await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, previous)).catch(() => {});
+    }
+    savedPath = null;
+    res.status(201).json({ ok: true, type: annexType });
+  } catch (err) {
+    if (savedPath) await fs.promises.unlink(savedPath).catch(() => {});
     next(err);
   }
 }
@@ -684,11 +1042,30 @@ async function submitPayment(req, res, next) {
       return res.status(400).json({ message: 'Joignez la capture du message de confirmation MVola pour permettre la vérification.' });
     }
     const rows = await query(
-      'SELECT id_demande, reference, statut, montant FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1',
+      'SELECT id_demande, reference, type_document, template_id, profil_demandeur, statut, montant, autorisation_filename, mandat_filename FROM demandes_documents_contractuels WHERE id_demande = ? AND id_utilisateur = ? LIMIT 1',
       [id, currentUserId(req)]
     );
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     if (rows[0].statut !== 'brouillon') return res.status(409).json({ message: 'Le paiement de cette demande a déjà été soumis.' });
+    if (rows[0].template_id === 'contrat_intercolocs' && rows[0].profil_demandeur === 'locataire' && !rows[0].autorisation_filename) {
+      return res.status(400).json({ message: 'Ajoutez l’Autorisation de colocation signée avant le paiement.' });
+    }
+    if (rows[0].template_id === 'contrat_mandacolocs' && rows[0].profil_demandeur === 'professionnel' && !rows[0].mandat_filename) {
+      return res.status(400).json({ message: 'Ajoutez le Mandat de gestion signé avant le paiement.' });
+    }
+    for (const filename of [rows[0].autorisation_filename, rows[0].mandat_filename]) {
+      if (filename) {
+        if (!/^[a-f0-9]{40}\.pdf$/.test(filename)) {
+          return res.status(409).json({ message: 'Une annexe signée est introuvable. Ajoutez-la de nouveau avant le paiement.' });
+        }
+        try {
+          await fs.promises.access(path.join(DOCUMENT_ANNEXES_DIR, filename));
+        } catch (error) {
+          if (error.code === 'ENOENT') return res.status(409).json({ message: 'Une annexe signée est introuvable. Ajoutez-la de nouveau avant le paiement.' });
+          throw error;
+        }
+      }
+    }
     const duplicateReferences = await query(
       `SELECT id_demande FROM demandes_documents_contractuels
         WHERE LOWER(moyen_paiement) = LOWER(?) AND LOWER(reference_operateur) = LOWER(?)
@@ -807,11 +1184,7 @@ async function getDocument(req, res, next) {
     await ensureContractContent();
     await ensureDocumentRequestsSchema();
     const id = Number(req.params.id);
-    const password = req.body?.password;
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
-    if (typeof password !== 'string' || !/^[\x20-\x7e]{12,127}$/.test(password)) {
-      return res.status(400).json({ message: 'Le mot de passe doit contenir de 12 à 127 caractères ASCII visibles.' });
-    }
     const rows = await query(
       `SELECT id_demande, reference, type_document, template_id, profil_demandeur, donnees,
               clauses_ids, clauses_snapshot, statut, statut_paiement,
@@ -834,28 +1207,82 @@ async function getDocument(req, res, next) {
     if (actualHash !== document.archive_sha256) {
       return res.status(500).json({ message: 'L’empreinte de l’archive ne correspond pas. Le téléchargement est suspendu pour vérification.' });
     }
-    const encryptedPdf = await createEncryptedTemplatePdf(
-      archive,
-      password,
-      crypto.randomBytes(32).toString('base64url')
-    );
-    const deliveryHash = crypto.createHash('sha256').update(encryptedPdf).digest('hex');
+    const deliveryHash = actualHash;
     await query(
       `INSERT INTO empreintes_documents_contractuels
         (id_demande, id_utilisateur, type_pdf, sha256)
-       VALUES (?, ?, 'copie_chiffree', ?)`,
+       VALUES (?, ?, 'pdf_livre', ?)`,
       [document.id_demande, currentUserId(req), deliveryHash]
     );
     res.set({
       'Cache-Control': 'private, no-store',
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${document.reference.replace(/[^A-Za-z0-9_-]/g, '')}.pdf"`,
-      'Content-Length': encryptedPdf.length,
+      'Content-Length': archive.length,
     });
-    res.send(encryptedPdf);
+    res.send(archive);
   } catch (err) {
     next(err);
   }
+}
+
+async function createDownloadLink(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'Demande invalide.' });
+    const rows = await query(
+      `SELECT id_demande FROM demandes_documents_contractuels
+        WHERE id_demande = ? AND id_utilisateur = ? AND client_deleted = 0
+          AND statut = 'valide' AND statut_paiement = 'conforme'
+          AND archive_filename IS NOT NULL AND archive_sha256 IS NOT NULL LIMIT 1`,
+      [id, currentUserId(req)]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Document validé introuvable.' });
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    await query(
+      'UPDATE demandes_documents_contractuels SET download_token_hash = ?, download_token_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 15 MINUTE) WHERE id_demande = ?',
+      [tokenHash, id]
+    );
+    res.json({ token, expires_in_seconds: 900 });
+  } catch (err) { next(err); }
+}
+
+async function downloadByToken(req, res, next) {
+  try {
+    await ensureDocumentRequestsSchema();
+    const token = String(req.params.token || '');
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return res.status(404).json({ message: 'Lien de téléchargement invalide ou expiré.' });
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const rows = await query(
+      `SELECT id_demande, id_utilisateur, reference, archive_filename, archive_sha256
+         FROM demandes_documents_contractuels
+        WHERE download_token_hash = ? AND download_token_expires_at > UTC_TIMESTAMP()
+          AND client_deleted = 0 AND statut = 'valide' AND statut_paiement = 'conforme' LIMIT 1`,
+      [tokenHash]
+    );
+    const row = rows[0];
+    if (!row || !/^[a-f0-9]{40}\.pdf$/.test(row.archive_filename || '') || !/^[a-f0-9]{64}$/.test(row.archive_sha256 || '')) {
+      return res.status(404).json({ message: 'Lien de téléchargement invalide ou expiré.' });
+    }
+    const archive = await fs.promises.readFile(path.join(DOCUMENT_ARCHIVES_DIR, row.archive_filename));
+    if (crypto.createHash('sha256').update(archive).digest('hex') !== row.archive_sha256) {
+      return res.status(500).json({ message: 'L’empreinte de l’archive ne correspond pas.' });
+    }
+    await query(
+      `INSERT INTO empreintes_documents_contractuels (id_demande, id_utilisateur, type_pdf, sha256)
+       VALUES (?, ?, 'pdf_livre', ?)`,
+      [row.id_demande, row.id_utilisateur, row.archive_sha256]
+    );
+    res.set({
+      'Cache-Control': 'private, no-store',
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${row.reference.replace(/[^A-Za-z0-9_-]/g, '')}.pdf"`,
+      'Content-Length': archive.length,
+    });
+    res.send(archive);
+  } catch (err) { next(err); }
 }
 
 async function listBackoffice(req, res, next) {
@@ -864,9 +1291,10 @@ async function listBackoffice(req, res, next) {
     await ensureDocumentRequestsSchema();
     const [rows, clauseRows] = await Promise.all([
       query(
-        `SELECT d.*, u.nom, u.prenom, u.email
+      `SELECT d.*, u.nom, u.prenom, u.email
            FROM demandes_documents_contractuels d
            LEFT JOIN utilisateurs u ON u.id_utilisateur = d.id_utilisateur
+          WHERE d.client_deleted = 0
           ORDER BY CASE WHEN d.statut = 'valide' AND d.statut_paiement = 'conforme' THEN 0 ELSE 1 END,
                    d.date_creation DESC
           LIMIT 500`
@@ -874,20 +1302,23 @@ async function listBackoffice(req, res, next) {
       query('SELECT id_clause, titre, description FROM contrat_clauses'),
     ]);
     const clausesById = new Map(clauseRows.map((clause) => [Number(clause.id_clause), clause]));
-    res.json(rows.map((row) => ({
+    res.json(await Promise.all(rows.map(async (row) => ({
       ...(({
         preuve_paiement: _proof,
         archive_filename: _archiveFilename,
         archive_sha256: _archiveHash,
         archive_generated_at: _archiveGeneratedAt,
+        autorisation_filename: _authorizationFilename,
+        mandat_filename: _managementMandateFilename,
         ...safeRow
       }) => safeRow)(row),
-      donnees: parseJson(row.donnees, {}),
+      donnees: await decryptRequestData(row.donnees),
       clauses_ids: parseJson(row.clauses_ids, []),
       has_payment_proof: Boolean(row.preuve_paiement),
+      has_archive: Boolean(row.archive_filename && row.archive_sha256),
       clauses: parseJson(row.clauses_snapshot, null) ||
         parseJson(row.clauses_ids, []).map((id) => clausesById.get(Number(id))).filter(Boolean),
-    })));
+    }))));
   } catch (err) {
     next(err);
   }
@@ -951,10 +1382,17 @@ async function updateBackoffice(req, res, next) {
     const rows = await query('SELECT * FROM demandes_documents_contractuels WHERE id_demande = ? LIMIT 1', [id]);
     if (!rows.length) return res.status(404).json({ message: 'Demande introuvable.' });
     const request = rows[0];
+    if (request.client_deleted) return res.status(404).json({ message: 'Demande introuvable.' });
+    if (statut === 'valide' && !['a-verifier', 'en-cours', 'valide'].includes(request.statut)) {
+      return res.status(409).json({ message: 'Le paiement doit être soumis puis vérifié avant de valider le document.' });
+    }
+    if (statut === 'valide' && request.statut !== 'valide' && request.statut_paiement !== 'a-verifier') {
+      return res.status(409).json({ message: 'Le paiement doit être confirmé par l’équipe avant de générer le document final.' });
+    }
     let savedArchive;
     let archive;
     if (statut === 'valide') {
-      if (/^[a-f0-9]{40}\.pdf$/.test(request.archive_filename || '') && /^[a-f0-9]{64}$/.test(request.archive_sha256 || '')) {
+      if (request.statut === 'valide' && /^[a-f0-9]{40}\.pdf$/.test(request.archive_filename || '') && /^[a-f0-9]{64}$/.test(request.archive_sha256 || '')) {
         try {
           const existingArchive = await fs.promises.readFile(path.join(DOCUMENT_ARCHIVES_DIR, request.archive_filename));
           const existingHash = crypto.createHash('sha256').update(existingArchive).digest('hex');
@@ -965,15 +1403,30 @@ async function updateBackoffice(req, res, next) {
           if (archiveError.code !== 'ENOENT') throw archiveError;
         }
       }
+      if (request.statut === 'valide' && !archive) {
+        return res.status(503).json({ message: 'L’archive finale est absente ou altérée et ne peut pas être régénérée. Contacte l’équipe Coloc’KOO.' });
+      }
       if (!archive) {
         const rendered = await renderContratsImmoPdf({
           reference: request.reference,
           type: request.type_document,
           templateId: request.template_id,
           profile: request.profil_demandeur,
-          data: parseJson(request.donnees, {}),
+          data: await decryptRequestData(request.donnees),
+          templateEdits: await getActiveTemplateEdits(),
+          annexes: await Promise.all([
+            request.mandat_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.mandat_filename))
+              .then((pdfBuffer) => ({ title: 'ANNEXE 0 : MANDAT DE GESTION', pdfBuffer })),
+            request.autorisation_filename && fs.promises.readFile(path.join(DOCUMENT_ANNEXES_DIR, request.autorisation_filename))
+              .then((pdfBuffer) => ({ title: 'ANNEXE 1 : AUTORISATION DE COLOCATION', pdfBuffer })),
+          ].filter(Boolean)),
         });
-        archive = await savePdfaArchive({ sourcePdfBuffer: rendered.pdfBuffer });
+        const buyerRows = await query('SELECT prenom, nom FROM utilisateurs WHERE id_utilisateur = ? LIMIT 1', [request.id_utilisateur]);
+        archive = await savePdfaArchive({
+          sourcePdfBuffer: rendered.pdfBuffer,
+          buyer: [buyerRows[0]?.prenom, buyerRows[0]?.nom].filter(Boolean).join(' '),
+          transaction: request.reference_operateur || request.reference,
+        });
         savedArchive = archive.filename;
       }
     }
@@ -989,12 +1442,18 @@ async function updateBackoffice(req, res, next) {
                 END,
                 archive_filename = ?,
                 archive_sha256 = ?,
+                donnees = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_OBJECT() ELSE donnees END,
+                clauses_ids = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_ARRAY() ELSE clauses_ids END,
+                clauses_snapshot = CASE WHEN ? IN ('valide', 'refuse') THEN JSON_ARRAY() ELSE clauses_snapshot END,
                 archive_generated_at = CASE
                   WHEN ? = 'refuse' THEN NULL
                   WHEN ? = 'valide' AND ? = 1 THEN CURRENT_TIMESTAMP
                   WHEN ? = 'valide' THEN COALESCE(archive_generated_at, CURRENT_TIMESTAMP)
                   ELSE archive_generated_at
-                END
+                END,
+                autorisation_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE autorisation_filename END,
+                mandat_filename = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE mandat_filename END,
+                preuve_paiement = CASE WHEN ? IN ('valide', 'refuse') THEN NULL ELSE preuve_paiement END
           WHERE id_demande = ?`,
         [
           statut,
@@ -1004,11 +1463,27 @@ async function updateBackoffice(req, res, next) {
           statut === 'refuse' ? null : archive?.sha256 || request.archive_sha256 || null,
           statut,
           statut,
+          statut,
+          statut,
+          statut,
           savedArchive ? 1 : 0,
+          statut,
+          statut,
+          statut,
           statut,
           id,
         ]
       );
+      if (['valide', 'refuse'].includes(statut)) {
+        for (const filename of [request.autorisation_filename, request.mandat_filename]) {
+          if (/^[a-f0-9]{40}\.pdf$/.test(filename || '')) {
+            await fs.promises.unlink(path.join(DOCUMENT_ANNEXES_DIR, filename)).catch(() => {});
+          }
+        }
+        if (/^[a-f0-9]{40}\.(png|jpg|webp)$/.test(request.preuve_paiement || '')) {
+          await fs.promises.unlink(path.join(PAYMENT_PROOFS_DIR, request.preuve_paiement)).catch(() => {});
+        }
+      }
     } catch (updateError) {
       if (savedArchive) {
         await fs.promises.unlink(path.join(DOCUMENT_ARCHIVES_DIR, savedArchive)).catch((cleanupError) => {
@@ -1030,11 +1505,17 @@ async function updateBackoffice(req, res, next) {
 
 module.exports = {
   createDraft,
+  uploadSignedAnnex,
   preview,
   listMine,
+  deleteMine,
   submitPayment,
   getDocument,
+  createDownloadLink,
+  downloadByToken,
   listBackoffice,
+  listBackofficeTemplates,
+  saveBackofficeTemplate,
   listBackofficeClauses,
   createBackofficeClause,
   updateBackofficeClause,

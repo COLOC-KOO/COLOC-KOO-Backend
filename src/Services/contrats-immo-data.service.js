@@ -4,12 +4,21 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const PDFDocument = require('pdfkit');
 const execFileAsync = promisify(execFile);
 
 const TEMPLATE_BY_PROFILE = Object.freeze({
   locataire: 'contrat_intercolocs',
   proprietaire: 'contrat_propriocolocs',
   professionnel: 'contrat_mandacolocs',
+});
+const TEMPLATE_COPIES = Object.freeze({
+  autorisation_colocation: 2,
+  avenant_substitution: 3,
+  mandat_gestion: 2,
+  contrat_intercolocs: 2,
+  contrat_propriocolocs: 2,
+  contrat_mandacolocs: 2,
 });
 
 function displayDate(value) {
@@ -92,6 +101,50 @@ async function combinePdfBuffers(pdfBuffers) {
   }
 }
 
+function annexCoverPdf(title) {
+  return new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({ size: 'A4', margin: 54 });
+    const chunks = [];
+    pdf.on('data', (chunk) => chunks.push(chunk));
+    pdf.on('error', reject);
+    pdf.on('end', () => resolve(Buffer.concat(chunks)));
+    pdf.font('Helvetica-Bold').fontSize(18).fillColor('#243746')
+      .text(title, 54, 340, { width: 487, align: 'center' });
+    pdf.font('Helvetica').fontSize(10).fillColor('#667085')
+      .text('Document signé joint au contrat de colocation.', 54, 390, { width: 487, align: 'center' });
+    pdf.end();
+  });
+}
+
+function cashReceiptPdf(data) {
+  return new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({ size: 'A4', margin: 40 });
+    const chunks = [];
+    pdf.on('data', (chunk) => chunks.push(chunk));
+    pdf.on('error', reject);
+    pdf.on('end', () => resolve(Buffer.concat(chunks)));
+    const drawReceipt = (top) => {
+      pdf.font('Helvetica-Bold').fontSize(14).text('ATTESTATION DE REMISE EN ESPECES', 45, top, { align: 'center', width: 505 });
+      pdf.font('Helvetica').fontSize(10);
+      const requester = [data.prenom_demandeur, data.nom_demandeur].filter(Boolean).join(' ')
+        || [data.nom_entreprise, data.representant].filter(Boolean).join(' — ');
+      pdf.text(`Remettant : ${requester}`, 55, top + 38);
+      pdf.text(`Beneficiaire : ${[data.prenom_autre_partie, data.nom_autre_partie].filter(Boolean).join(' ')}`, 55, top + 57);
+      pdf.text('Montant remis : ________________________ Ariary', 55, top + 85);
+      pdf.text('Motif : ___________________________________________________', 55, top + 108);
+      pdf.text('Fait a ______________________________, le ____ / ____ / ______', 55, top + 131);
+      pdf.text('Signature du remettant', 75, top + 170);
+      pdf.text('Signature du beneficiaire', 330, top + 170);
+      pdf.moveTo(55, top + 215).lineTo(260, top + 215).stroke();
+      pdf.moveTo(310, top + 215).lineTo(515, top + 215).stroke();
+      pdf.rect(45, top - 8, 505, 240).strokeColor('#7b8794').stroke();
+    };
+    drawReceipt(35);
+    drawReceipt(430);
+    pdf.end();
+  });
+}
+
 function buildTemplateData({ type, profile, data, reference }) {
   const supplied = data && typeof data === 'object' ? data : {};
   const result = Object.fromEntries(Object.entries(supplied).map(([key, value]) => {
@@ -111,11 +164,13 @@ function buildTemplateData({ type, profile, data, reference }) {
   if (typeof supplied.repartition_texte === 'string') {
     result.repartition = parseTextRows(supplied.repartition_texte, ['repartition_habitant', 'repartition_chambre', 'repartition_montant']);
   }
+  const repartitionTotal = (result.repartition || []).reduce((sum, row) => sum + Number(String(row.repartition_montant || '').replace(/\D/g, '') || 0), 0);
+  result.repartition_total = get('repartition_total') || amount(repartitionTotal);
   const person = (prefix, source) => {
     const fullName = get(`${source}_nom_complet`, `nom_${source}`, `${source}_nom_prenom`);
     const nameParts = fullName.split(/\s+/).filter(Boolean);
     result[`${prefix}_nom`] = get(`${source}_nom`) || nameParts.slice(1).join(' ') || fullName;
-    result[`${prefix}_prenom`] = get(`${source}_prenom`) || (nameParts.length > 1 ? nameParts[0] : '');
+    result[`${prefix}_prenom`] = get(`${source}_prenom`, `prenom_${source}`) || (nameParts.length > 1 ? nameParts[0] : '');
     result[`${prefix}_date_naissance`] = displayDate(get(`${source}_date_naissance`, `date_naissance_${source}`));
     result[`${prefix}_ville_naissance`] = get(`${source}_ville_naissance`, `ville_naissance_${source}`);
     result[`${prefix}_pays_naissance`] = get(`${source}_pays_naissance`, `pays_naissance_${source}`);
@@ -124,12 +179,17 @@ function buildTemplateData({ type, profile, data, reference }) {
     result[`${prefix}_email`] = get(`${source}_email`, `email_${source}`);
   };
   result.reference = reference || '';
+  result.fait_a = '';
+  result.fait_le = '';
   result.date_effet = displayDate(get('date_effet', 'date_entree'));
   result.logement_adresse = get('logement_adresse', 'adresse');
   result.logement_code_postal = get('logement_code_postal', 'code_postal');
   result.logement_ville = get('logement_ville', 'ville');
   result.logement_typologie = get('logement_typologie', 'type_bien');
   result.logement_description = get('logement_description', 'description_logement', 'observations');
+  result.statut_proprietaire = get('statut_proprietaire');
+  result.proprietaire_du_bien = result.statut_proprietaire === 'proprietaire';
+  result.titulaire_des_droits = result.statut_proprietaire === 'titulaire_droits';
   result.duree_bail = get('duree_bail', 'bail_duree', 'type_bail');
   result.loyer_jour_paiement = get('loyer_jour_paiement', 'jour_paiement');
   result.preavis_bailleur_mois = get('preavis_bailleur_mois', 'preavis_bailleur');
@@ -146,8 +206,8 @@ function buildTemplateData({ type, profile, data, reference }) {
   result.loyer_montant_lettres = get('loyer_montant_lettres') || amountInWords(get('loyer_montant', 'loyer'));
   const chargeRows = parseList(supplied.charges_lignes || supplied.charges).length
     ? parseList(supplied.charges_lignes || supplied.charges)
-    : parseTextRows(supplied.charges_lignes_texte, ['charge_nom', 'charge_montant', 'charge_repartition', 'charge_description']);
-  const lineChargeTotal = chargeRows.reduce((sum, row) => sum + Number(String(row.charge_montant || row.charge_repartition || '').replace(/\D/g, '')), 0);
+    : parseTextRows(supplied.charges_lignes_texte, ['charge_nom', 'charge_repartition', 'charge_description']);
+  const lineChargeTotal = chargeRows.reduce((sum, row) => sum + Number(String(row.charge_repartition || '').replace(/\D/g, '') || 0), 0);
   const chargeTotal = get('charges_total') || (lineChargeTotal ? String(lineChargeTotal) : get('charges'));
   result.charges = chargeRows.length ? chargeRows : (Number(chargeTotal) > 0 ? [{
     charge_nom: get('charge_nom') || 'Charges mensuelles',
@@ -164,6 +224,14 @@ function buildTemplateData({ type, profile, data, reference }) {
     ? parseList(supplied.niveaux)
     : parseTextRows(supplied.niveaux_texte, ['niveau_libelle', 'niveau_description']);
   result.regime_solidaire = ['solidaire', 'collective', 'avec', 'oui'].includes(get('solidarite', 'regime_responsabilite').toLowerCase());
+  result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom') || [get('prenom_demandeur'), get('nom_demandeur', 'representant', 'nom_entreprise')].filter(Boolean).join(' ');
+  result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur', 'nif');
+  result.gestionnaire_contact = get('telephone_demandeur', 'email_demandeur');
+  result.gestionnaire_date_naissance = displayDate(get('gestionnaire_date_naissance', 'date_naissance_demandeur'));
+  result.gestionnaire_qualite = profile === 'locataire' ? 'Occupant principal' : profile === 'proprietaire' ? 'Propriétaire' : 'Mandataire';
+  result.gestionnaire_proprietaire = profile === 'proprietaire';
+  result.gestionnaire_occupant_principal = profile === 'locataire';
+  result.gestionnaire_mandataire = profile === 'professionnel';
   result.espace_meuble = ['oui', 'meuble'].includes(get('meuble', 'espace_meuble').toLowerCase());
   result.charges_avec = get('charges_avec')
     ? get('charges_avec').toLowerCase() === 'oui'
@@ -197,6 +265,11 @@ function buildTemplateData({ type, profile, data, reference }) {
   } else if (profile === 'proprietaire') {
     person('bailleur', 'demandeur');
     result.bailleur_denomination = get('bailleur_denomination', 'nom_entreprise', 'nom_demandeur');
+    result.bailleur_forme_juridique = get('bailleur_forme_juridique', 'forme_juridique');
+    result.bailleur_nif = get('bailleur_nif', 'nif');
+    result.bailleur_rcs = get('bailleur_rcs', 'rcs');
+    result.bailleur_stat = get('bailleur_stat', 'stat');
+    result.bailleur_siege = get('bailleur_siege', 'adresse_entreprise');
     result.bailleur_representant = get('bailleur_representant', 'representant');
     result.bailleur_representant_qualite = get('bailleur_representant_qualite', 'representant_qualite');
     person('locataire', 'autre_partie');
@@ -208,7 +281,7 @@ function buildTemplateData({ type, profile, data, reference }) {
     result.mandataire_rcs = get('mandataire_rcs', 'rcs');
     result.mandataire_stat = get('mandataire_stat', 'stat');
     result.mandataire_siege = get('mandataire_siege', 'adresse_entreprise');
-    result.mandataire_representant = get('mandataire_representant', 'representant');
+    result.mandataire_representant = get('mandataire_representant') || [get('representant'), get('representant_qualite')].filter(Boolean).join(' — ');
     result.proprietaire_nom = get('proprietaire_nom', 'nom_proprietaire');
     result.proprietaire_adresse = get('proprietaire_adresse', 'adresse_proprietaire');
     result.proprietaire_piece_identite = get('proprietaire_piece_identite', 'cin_proprietaire');
@@ -216,32 +289,61 @@ function buildTemplateData({ type, profile, data, reference }) {
   }
 
   if (type === 'edl') {
-    result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom', 'nom_demandeur');
-    result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur');
+    result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom') || [get('prenom_demandeur'), get('nom_demandeur', 'representant', 'nom_entreprise')].filter(Boolean).join(' ');
+    result.gestionnaire_piece_identite = get('gestionnaire_piece_identite', 'cin_demandeur', 'nif');
     result.gestionnaire_contact = get('gestionnaire_contact', 'telephone_demandeur', 'email_demandeur');
     result.gestionnaire_qualite = profile === 'locataire' ? 'Occupant principal' : profile === 'proprietaire' ? 'Propriétaire' : 'Mandataire';
-    result.locataire_nom = get('locataire_nom', 'nom_autre_partie');
-    result.locataire_prenom = get('locataire_prenom');
+    const occupantFullName = get('locataire_nom', 'nom_autre_partie');
+    const occupantNameParts = occupantFullName.split(/\s+/).filter(Boolean);
+    result.locataire_nom = get('locataire_nom') || (occupantNameParts.length > 1 ? occupantNameParts.slice(1).join(' ') : occupantFullName);
+    result.locataire_prenom = get('locataire_prenom', 'prenom_autre_partie') || (occupantNameParts.length > 1 ? occupantNameParts[0] : '');
     result.locataire_piece_identite = get('locataire_piece_identite', 'cin_autre_partie');
     result.locataire_telephone = get('locataire_telephone', 'telephone_autre_partie');
   }
+  if ((profile === 'professionnel' || profile === 'proprietaire' && get('personne_morale') === 'oui') && get('representant')) {
+    result.gestionnaire_nom_prenom = get('gestionnaire_nom_prenom', 'representant');
+  }
+  result.nom_demandeur = [get('prenom_demandeur'), get('nom_demandeur')].filter(Boolean).join(' ') || get('representant', 'nom_entreprise');
+  result.nom_autre_partie = [get('prenom_autre_partie'), get('nom_autre_partie')].filter(Boolean).join(' ');
   return result;
 }
 
 async function renderContratsImmoPdf(options) {
   const templateId = options.templateId || (options.type === 'edl' ? 'etat_des_lieux' : TEMPLATE_BY_PROFILE[options.profile]);
   if (!templateId) throw new Error('Aucun modèle Word ne correspond au profil sélectionné.');
+  const templateEdits = options.templateEdits || {};
   const fields = buildTemplateData(options);
-  const docxBuffer = renderContratsImmoDocx(templateId, fields);
+  const docxBuffer = renderContratsImmoDocx(templateId, fields, templateEdits[templateId]);
   const mainPdf = await convertContratsImmoDocxToPdf(docxBuffer);
   if (options.type !== 'contrat' || !Object.values(TEMPLATE_BY_PROFILE).includes(templateId)) {
-    return { templateId, fields, docxBuffer, pdfBuffer: mainPdf };
+    const copies = TEMPLATE_COPIES[templateId] || 1;
+    const pdfBuffer = copies > 1 ? await combinePdfBuffers(Array.from({ length: copies }, () => mainPdf)) : mainPdf;
+    return { templateId, fields, docxBuffer, pdfBuffer };
   }
   const edlFields = buildTemplateData({ ...options, type: 'edl' });
-  const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields);
+  const edlDocx = renderContratsImmoDocx('etat_des_lieux', edlFields, templateEdits.etat_des_lieux);
   const edlPdf = await convertContratsImmoDocxToPdf(edlDocx);
-  const pdfBuffer = await combinePdfBuffers([mainPdf, edlPdf]);
-  return { templateId, templateIds: [templateId, 'etat_des_lieux'], fields, docxBuffer, pdfBuffer };
+  const documents = [];
+  for (const annex of Array.isArray(options.annexes) ? options.annexes : []) {
+    if (!Buffer.isBuffer(annex?.pdfBuffer)) continue;
+    if (annex.title) documents.push(await annexCoverPdf(annex.title));
+    documents.push(annex.pdfBuffer);
+  }
+  documents.push(mainPdf, mainPdf, await annexCoverPdf('ANNEXE 2 : ÉTAT DES LIEUX D’ENTRÉE'), edlPdf);
+  const templateIds = [templateId, 'etat_des_lieux'];
+  for (const [field, auxiliaryId] of [['inclure_charte', 'charte_colocation'], ['inclure_attestation_logement', 'attestation_logement']]) {
+    if (options.data?.[field] !== 'oui') continue;
+    const auxiliaryDocx = renderContratsImmoDocx(auxiliaryId, fields, templateEdits[auxiliaryId]);
+    if (auxiliaryId === 'charte_colocation') documents.push(await annexCoverPdf('ANNEXE 3 : CHARTE DE COLOCATION'));
+    documents.push(await convertContratsImmoDocxToPdf(auxiliaryDocx));
+    templateIds.push(auxiliaryId);
+  }
+  if (options.data?.inclure_attestation_especes === 'oui') {
+    documents.push(await cashReceiptPdf(options.data));
+    templateIds.push('attestation_remise_especes');
+  }
+  const pdfBuffer = await combinePdfBuffers(documents);
+  return { templateId, templateIds, fields, docxBuffer, pdfBuffer };
 }
 
 module.exports = { TEMPLATE_BY_PROFILE, amount, amountInWords, buildTemplateData, renderContratsImmoPdf };

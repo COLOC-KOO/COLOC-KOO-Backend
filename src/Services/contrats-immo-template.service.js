@@ -22,6 +22,89 @@ const TEMPLATES = Object.freeze({
   attestation_logement: 'ColocKOO_Attestation_de_logement_balise.docx',
 });
 
+const TEMPLATE_TITLES = Object.freeze({
+  autorisation_colocation: 'Autorisation de colocation',
+  avenant_substitution: 'Avenant de substitution',
+  charte_colocation: 'Charte de colocation',
+  contrat_intercolocs: 'Contrat Intercolocs',
+  contrat_mandacolocs: 'Contrat Mandacolocs',
+  contrat_propriocolocs: 'Contrat Propriocolocs',
+  etat_des_lieux: 'État des lieux',
+  mandat_gestion: 'Mandat de gestion',
+  attestation_logement: 'Attestation de logement',
+});
+
+function decodeXmlText(value) {
+  return String(value || '').replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, code) => {
+    if (code[0] === '#') return String.fromCodePoint(code[1].toLowerCase() === 'x' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10));
+    return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" })[code.toLowerCase()];
+  });
+}
+
+function encodeXmlText(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function paragraphText(xml) {
+  return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => decodeXmlText(match[1])).join('');
+}
+
+function getTemplateParagraphs(templateId) {
+  const filename = TEMPLATES[templateId];
+  if (!filename) throw new Error(`Modèle Contrats Immo inconnu : ${templateId}`);
+  const xml = new PizZip(fs.readFileSync(path.join(TEMPLATE_DIRECTORY, filename))).file('word/document.xml')?.asText();
+  if (!xml) throw new Error('Le modèle Word ne contient pas de document principal valide.');
+  const paragraphs = [...xml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)].map((match) => paragraphText(match[0]));
+  return paragraphs.map((text, index) => ({ index, text })).filter((item) => item.text.trim());
+}
+
+function validateTemplateEdits(templateId, edits) {
+  const paragraphs = getTemplateParagraphs(templateId);
+  const normalized = {};
+  for (const [rawIndex, rawText] of Object.entries(edits || {})) {
+    const index = Number(rawIndex);
+    const paragraph = paragraphs.find((item) => item.index === index);
+    if (!Number.isInteger(index) || !paragraph || typeof rawText !== 'string' || rawText.length > 5000) {
+      throw new Error('Une modification de paragraphe est invalide.');
+    }
+    const original = paragraph.text;
+    const tags = (value) => [...value.matchAll(/\{\{[#^/]?[^{}]+\}\}/g)].map((match) => match[0]).sort();
+    if (JSON.stringify(tags(original)) !== JSON.stringify(tags(rawText))) {
+      throw new Error('Les variables et conditions du modèle doivent rester inchangées.');
+    }
+    if (rawText !== original) normalized[index] = rawText;
+  }
+  return normalized;
+}
+
+function applyTemplateEdits(docxBuffer, edits) {
+  if (!edits || typeof edits !== 'object' || !Object.keys(edits).length) return docxBuffer;
+  const zip = new PizZip(docxBuffer);
+  const entry = zip.file('word/document.xml');
+  if (!entry) throw new Error('Le modèle Word ne contient pas de document principal valide.');
+  let index = 0;
+  const xml = entry.asText().replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paragraph) => {
+    const replacement = edits[index];
+    index += 1;
+    if (replacement === undefined) return paragraph;
+    let first = true;
+    const next = paragraph.replace(/(<w:t(?:\s[^>]*)?>)[\s\S]*?(<\/w:t>)/g, (_match, open, close) => {
+      if (first) {
+        first = false;
+        const textTag = /<w:t(?:\s[^>]*)?>/.exec(open)?.[0] || '<w:t>';
+        const preservedTag = /xml:space=/.test(textTag) || !/^\s|\s$/.test(replacement)
+          ? textTag
+          : textTag.replace(/>$/, ' xml:space="preserve">');
+        return `${preservedTag}${encodeXmlText(replacement)}${close}`;
+      }
+      return `${open.replace(/<w:t/, '<w:t')}${close}`;
+    });
+    return first ? paragraph : next;
+  });
+  zip.file('word/document.xml', xml);
+  return zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
 /**
  * Fill one supplied Word template.
  *
@@ -29,12 +112,12 @@ const TEMPLATES = Object.freeze({
  * normal and inverted sections handle conditional content; loops placed in a
  * Word table row duplicate that row for each item in the supplied array.
  */
-function renderContratsImmoDocx(templateId, data) {
+function renderContratsImmoDocx(templateId, data, templateEdits = {}) {
   const filename = TEMPLATES[templateId];
   if (!filename) throw new Error(`Modèle Contrats Immo inconnu : ${templateId}`);
 
   const templatePath = path.join(TEMPLATE_DIRECTORY, filename);
-  const content = fs.readFileSync(templatePath);
+  const content = applyTemplateEdits(fs.readFileSync(templatePath), templateEdits);
   const zip = new PizZip(content);
   const document = new Docxtemplater(zip, {
     delimiters: { start: '{{', end: '}}' },
@@ -127,6 +210,9 @@ async function convertContratsImmoDocxToPdf(docxBuffer) {
 
 module.exports = {
   TEMPLATES,
+  TEMPLATE_TITLES,
+  getTemplateParagraphs,
+  validateTemplateEdits,
   convertContratsImmoDocxToPdf,
   renderContratsImmoDocx,
 };
